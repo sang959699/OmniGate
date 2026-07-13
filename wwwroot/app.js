@@ -232,7 +232,9 @@ document.addEventListener("DOMContentLoaded", () => {
                         <span class="node-name-label" id="lbl-node-${node.nodeId}">${node.customName}</span>
                         <span class="edit-pencil" data-rename-id="${node.nodeId}" title="Rename Strip">✏️</span>
                     </div>
-                    <span class="node-id-sub">Node ID: ${node.nodeId}</span>
+                    ${showHiddenState ? `
+                        <span class="node-id-sub">Node ID: ${node.nodeId}</span>
+                    ` : ''}
                 `;
                 nodeBox.appendChild(headerRow);
                 
