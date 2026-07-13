@@ -201,7 +201,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     const epCard = document.createElement("div");
                     epCard.className = "endpoint-outlet-card";
                     
-                    const isSafetyLocked = ep.endpointId === 4; // Endpoint 4 powers the PC hosting it!
+                    const isSafetyLocked = false; // PC safety lock disabled by user request
                     const isChecked = ep.state === "ON";
                     const formattedTypes = ep.types.join(", ");
                     
@@ -470,7 +470,7 @@ document.addEventListener("DOMContentLoaded", () => {
         // 2. Tapo Outlets
         tapoNodes.forEach(node => {
             node.endpoints.forEach(ep => {
-                const isSafetyLocked = ep.endpointId === 4;
+                const isSafetyLocked = false;
                 const onUrl = `http://${serverAddress}/api/tapo/${node.nodeId}/${ep.endpointId}/on`;
                 const offUrl = `http://${serverAddress}/api/tapo/${node.nodeId}/${ep.endpointId}/off`;
                 const toggleUrl = `http://${serverAddress}/api/tapo/${node.nodeId}/${ep.endpointId}/toggle`;

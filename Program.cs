@@ -1165,12 +1165,6 @@ public class TapoService : ITapoService
 
     public async Task<bool> ControlOutletAsync(ulong nodeId, ushort endpointId, bool turnOn, bool toggle, CancellationToken cancellationToken = default)
     {
-        if (endpointId == _safetyLockEndpoint && (!turnOn || toggle))
-        {
-            string errMsg = $"[SAFETY LOCK VIOLATION] Action rejected. Endpoint {endpointId} is registered as the Host PC Power Source.";
-            _logger.LogError(errMsg);
-            throw new InvalidOperationException(errMsg);
-        }
 
         await _operationLock.WaitAsync(cancellationToken);
         try
