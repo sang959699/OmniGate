@@ -150,8 +150,26 @@
                     </div>
                 </section>
 
+                <!-- 4a. Wake on LAN Card -->
+                <section class="glass-card" id="wol-card">
+                    <div class="card-header">
+                        <h2>Wake on LAN (WOL)</h2>
+                        <button class="btn btn-secondary btn-sm" id="btn-trigger-wol">Wake PC</button>
+                    </div>
+                    <div class="card-content">
+                        <p class="description">Sends a UDP magic packet broadcast to wake your configured desktop PC.</p>
+                        
+                        <div class="form-group" style="margin-top: 1rem;">
+                            <label for="wol-mac-input">Custom Target MAC (Optional)</label>
+                            <input type="text" id="wol-mac-input" placeholder="e.g. AA:BB:CC:DD:EE:FF (defaults to server config)">
+                        </div>
+
+                        <div class="alert-box" id="wol-feedback" style="display: none; margin-top: 1rem;"></div>
+                    </div>
+                </section>
+
                 <!-- 5. iOS Shortcuts Assistant Card -->
-                <section class="glass-card span-two" id="shortcuts-card">
+                <section class="glass-card span-all" id="shortcuts-card">
                     <div class="card-header">
                         <h2>iOS Shortcuts Integration Assistant</h2>
                         <span class="badge success">POST Method</span>

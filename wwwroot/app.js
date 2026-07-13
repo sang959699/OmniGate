@@ -411,6 +411,32 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
 
+    // --- WAKE ON LAN CONTROLLER ---
+    const btnTriggerWol = document.getElementById("btn-trigger-wol");
+    const wolMacInput = document.getElementById("wol-mac-input");
+    const wolFeedback = document.getElementById("wol-feedback");
+
+    btnTriggerWol.addEventListener("click", async () => {
+        btnTriggerWol.disabled = true;
+        wolFeedback.style.display = "none";
+        
+        const macAddress = wolMacInput.value.trim() || null;
+        
+        try {
+            const res = await apiRequest("/api/wol/wake", "POST", { macAddress });
+            wolFeedback.style.display = "block";
+            wolFeedback.className = "alert-box success";
+            wolFeedback.innerHTML = `<strong>Sent!</strong> ${res.message}`;
+        } catch (error) {
+            wolFeedback.style.display = "block";
+            wolFeedback.className = "alert-box danger";
+            wolFeedback.innerHTML = `<strong>Error:</strong> ${error.message}`;
+        } finally {
+            btnTriggerWol.disabled = false;
+        }
+    });
+
+
     // --- CUSTOM RENAMING SYSTEM ---
     btnRenameCancel.addEventListener("click", () => {
         renameModal.style.display = "none";
@@ -560,6 +586,16 @@ document.addEventListener("DOMContentLoaded", () => {
                 <td data-label="Device / Outlet"><strong>SwitchBot Bot</strong><br><span style="font-size:0.75rem; color:var(--text-muted);">Direct BLE Control</span></td>
                 <td data-label="Trigger ON URL"><span class="shortcut-url-code" title="Click to copy">http://${serverAddress}/api/switchbot/on</span></td>
                 <td data-label="Trigger OFF URL"><span class="shortcut-url-code" title="Click to copy">http://${serverAddress}/api/switchbot/off</span></td>
+                <td data-label="Toggle State URL"><span class="shortcut-url-code" style="color: var(--text-muted); cursor: not-allowed; background: none; border: none;">[N/A]</span></td>
+            </tr>
+        `;
+        
+        // 1a. Wake on LAN
+        html += `
+            <tr>
+                <td data-label="Device / Outlet"><strong>Wake on LAN (WOL)</strong><br><span style="font-size:0.75rem; color:var(--text-muted);">Broadcast UDP Magic Packet</span></td>
+                <td data-label="Trigger ON URL"><span class="shortcut-url-code" title="Click to copy">http://${serverAddress}/api/wol/wake</span></td>
+                <td data-label="Trigger OFF URL"><span class="shortcut-url-code" style="color: var(--text-muted); cursor: not-allowed; background: none; border: none;">[N/A]</span></td>
                 <td data-label="Toggle State URL"><span class="shortcut-url-code" style="color: var(--text-muted); cursor: not-allowed; background: none; border: none;">[N/A]</span></td>
             </tr>
         `;

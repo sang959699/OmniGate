@@ -15,9 +15,13 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Configuration;
+using System.Net;
+using System.Net.Sockets;
+using System.Globalization;
 using HarmonyLib;
 
 // MatterDotNet imports
+using MatterEndPoint = MatterDotNet.Entities.EndPoint;
 using MatterDotNet.Entities;
 using MatterDotNet.OperationalDiscovery;
 using MatterDotNet.PKI;
@@ -76,6 +80,7 @@ class Program
         builder.Services.AddSingleton<IHiddenService, HiddenService>();
         builder.Services.AddSingleton<ISwitchBotService, SwitchBotService>();
         builder.Services.AddSingleton<ITapoService, TapoService>();
+        builder.Services.AddSingleton<IWakeOnLanService, WakeOnLanService>();
 
         // Set Binding Port
         string listenUrl = builder.Configuration["SwitchBot:ListenUrl"] ?? "http://0.0.0.0:5000";
@@ -326,6 +331,30 @@ class Program
             }
         });
 
+        // 13. Wake on LAN API
+        app.MapPost("/api/wol/wake", async (HttpContext context, IWakeOnLanService service) =>
+        {
+            try
+            {
+                WakeRequest? request = null;
+                try
+                {
+                    if (context.Request.ContentLength is > 0)
+                    {
+                        request = await context.Request.ReadFromJsonAsync<WakeRequest>();
+                    }
+                }
+                catch { /* Body is empty or not valid JSON — use server defaults */ }
+
+                await service.WakeAsync(request?.MacAddress, request?.BroadcastIp, request?.Port);
+                return Results.Ok(new { success = true, message = "Wake on LAN magic packet sent successfully." });
+            }
+            catch (Exception ex)
+            {
+                return Results.BadRequest(new { error = ex.Message });
+            }
+        });
+
         Console.WriteLine($"[Server] Starting HTTP REST API Server on {listenUrl}...");
         await app.RunAsync(listenUrl);
     }
@@ -336,6 +365,7 @@ public record NameUpdateRequest(string Id, string Name);
 public record HiddenUpdateRequest(string Key, bool Hidden);
 public record CommissionRequest(string SetupCode, string? WifiSsid = null, string? WifiPassword = null);
 public record CommissionResult(bool Success, string Message, string? ConfiguredSSID = null);
+public record WakeRequest(string? MacAddress = null, string? BroadcastIp = null, int? Port = null);
 
 // ------------------ HIDDEN SERVICE ------------------
 public interface IHiddenService
@@ -413,6 +443,65 @@ public class HiddenService : IHiddenService
     public List<string> GetAllHidden()
     {
         return _hidden.Where(kvp => kvp.Value).Select(kvp => kvp.Key).ToList();
+    }
+}
+
+// ------------------ WAKE ON LAN SERVICE ------------------
+public interface IWakeOnLanService
+{
+    Task WakeAsync(string? macAddress = null, string? broadcastIp = null, int? port = null);
+}
+
+public class WakeOnLanService : IWakeOnLanService
+{
+    private readonly IConfiguration _config;
+    private readonly ILogger<WakeOnLanService> _logger;
+
+    public WakeOnLanService(IConfiguration config, ILogger<WakeOnLanService> logger)
+    {
+        _config = config;
+        _logger = logger;
+    }
+
+    public async Task WakeAsync(string? macAddress = null, string? broadcastIp = null, int? port = null)
+    {
+        string targetMac = macAddress ?? _config["WakeOnLan:TargetMacAddress"] ?? "00:00:00:00:00:00";
+        string targetBroadcast = broadcastIp ?? _config["WakeOnLan:BroadcastIP"] ?? "255.255.255.255";
+        int targetPort = port ?? _config.GetValue<int>("WakeOnLan:Port", 9);
+
+        if (string.IsNullOrWhiteSpace(targetMac) || targetMac == "00:00:00:00:00:00")
+        {
+            throw new InvalidOperationException("Wake on LAN MAC address is not configured. Configure it in appsettings.json or supply it in request.");
+        }
+
+        _logger.LogInformation($"[WOL] Sending magic packet to MAC: {targetMac} via {targetBroadcast}:{targetPort}");
+
+        string cleanMac = targetMac.Replace(":", "").Replace("-", "").Trim();
+        if (cleanMac.Length != 12)
+        {
+            throw new ArgumentException("Invalid MAC address length. Must be 12 hexadecimal characters.");
+        }
+
+        byte[] macBytes = new byte[6];
+        for (int i = 0; i < 6; i++)
+        {
+            macBytes[i] = byte.Parse(cleanMac.Substring(i * 2, 2), NumberStyles.HexNumber);
+        }
+
+        byte[] packet = new byte[102];
+        for (int i = 0; i < 6; i++)
+        {
+            packet[i] = 0xFF;
+        }
+        for (int i = 0; i < 16; i++)
+        {
+            System.Buffer.BlockCopy(macBytes, 0, packet, 6 + i * 6, 6);
+        }
+
+        using var client = new UdpClient();
+        client.EnableBroadcast = true;
+        var endpoint = new IPEndPoint(IPAddress.Parse(targetBroadcast), targetPort);
+        await client.SendAsync(packet, packet.Length, endpoint);
     }
 }
 
@@ -1190,7 +1279,7 @@ public class TapoService : ITapoService
                     }
                 }
 
-                var endpoints = new List<EndPoint>();
+                var endpoints = new List<MatterEndPoint>();
                 if (node.Root != null)
                 {
                     GetEndpointsRecursive(node.Root, endpoints);
@@ -1454,7 +1543,7 @@ public class TapoService : ITapoService
     }
 
     // Helper methods
-    private void GetEndpointsRecursive(EndPoint current, List<EndPoint> list)
+    private void GetEndpointsRecursive(MatterEndPoint current, List<MatterEndPoint> list)
     {
         list.Add(current);
         foreach (var child in current.Children)
@@ -1463,7 +1552,7 @@ public class TapoService : ITapoService
         }
     }
 
-    private EndPoint? FindEndPoint(EndPoint current, ushort targetIndex)
+    private MatterEndPoint? FindEndPoint(MatterEndPoint current, ushort targetIndex)
     {
         if (GetEndpointIndex(current) == targetIndex) return current;
         foreach (var child in current.Children)
@@ -1474,9 +1563,9 @@ public class TapoService : ITapoService
         return null;
     }
 
-    private ushort GetEndpointIndex(EndPoint endpoint)
+    private ushort GetEndpointIndex(MatterEndPoint endpoint)
     {
-        var field = typeof(EndPoint).GetField("index", BindingFlags.NonPublic | BindingFlags.Instance);
+        var field = typeof(MatterEndPoint).GetField("index", BindingFlags.NonPublic | BindingFlags.Instance);
         var val = field?.GetValue(endpoint);
         return val is ushort u ? u : (ushort)0;
     }

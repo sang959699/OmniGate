@@ -155,6 +155,10 @@ body {
     grid-column: span 1;
 }
 
+.span-all {
+    grid-column: 1 / -1;
+}
+
 @media (min-width: 1024px) {
     .span-two {
         grid-column: span 2;
