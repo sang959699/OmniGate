@@ -39,6 +39,18 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Local states
     let isScanning = false;
+    
+    // Hidden Outlets state
+    const btnToggleHidden = document.getElementById("btn-toggle-hidden");
+    let hiddenOutlets = JSON.parse(localStorage.getItem("omni_hidden_outlets") || "[]");
+    let showHiddenState = localStorage.getItem("omni_show_hidden") === "true";
+
+    if (showHiddenState) {
+        btnToggleHidden.classList.add("active");
+        btnToggleHidden.innerHTML = "🙈 Hide Hidden";
+    } else {
+        btnToggleHidden.innerHTML = "👁️ Show Hidden";
+    }
 
     // Clock removed from header
 
@@ -198,12 +210,22 @@ document.addEventListener("DOMContentLoaded", () => {
                 epGrid.className = "endpoints-grid";
                 
                 node.endpoints.forEach(ep => {
-                    const epCard = document.createElement("div");
-                    epCard.className = "endpoint-outlet-card";
-                    
-                    const isSafetyLocked = false; // PC safety lock disabled by user request
                     const isChecked = ep.state === "ON";
                     const formattedTypes = ep.types.join(", ");
+                    const epKey = `${node.nodeId}_${ep.endpointId}`;
+                    const isEpHidden = hiddenOutlets.includes(epKey);
+                    
+                    if (isEpHidden && !showHiddenState) {
+                        return; // Skip rendering this endpoint card
+                    }
+                    
+                    const epCard = document.createElement("div");
+                    epCard.className = "endpoint-outlet-card";
+                    if (isEpHidden) {
+                        epCard.classList.add("faded-outlet");
+                    }
+                    
+                    const isSafetyLocked = false; // PC safety lock disabled by user request
                     
                     epCard.innerHTML = `
                         <div class="ep-header">
@@ -228,8 +250,11 @@ document.addEventListener("DOMContentLoaded", () => {
                             </div>
                         ` : ''}
 
-                        <div class="action-buttons">
-                            <button class="btn btn-secondary btn-sm edit-pencil-ep" data-rename-id="${node.nodeId}_${ep.endpointId}" title="Rename Outlet" style="width: 100%;">✏️ Edit Label</button>
+                        <div class="action-buttons" style="display: flex; gap: 0.5rem; width: 100%;">
+                            <button class="btn btn-secondary btn-sm edit-pencil-ep" data-rename-id="${node.nodeId}_${ep.endpointId}" title="Rename Outlet" style="flex: 1;">✏️ Label</button>
+                            <button class="btn btn-secondary btn-sm toggle-hide-ep" data-ep-key="${epKey}" title="${isEpHidden ? 'Unhide Outlet' : 'Hide Outlet'}" style="flex: 1;">
+                                ${isEpHidden ? '👁️ Show' : '👁️‍🗨️ Hide'}
+                            </button>
                         </div>
                     `;
                     epGrid.appendChild(epCard);
@@ -260,6 +285,20 @@ document.addEventListener("DOMContentLoaded", () => {
                     } finally {
                         chk.disabled = false;
                     }
+                });
+            });
+
+            // Hook up hide/unhide button clicks
+            tapoNodesContainer.querySelectorAll(".toggle-hide-ep").forEach(btn => {
+                btn.addEventListener("click", () => {
+                    const key = btn.dataset.epKey;
+                    if (hiddenOutlets.includes(key)) {
+                        hiddenOutlets = hiddenOutlets.filter(x => x !== key);
+                    } else {
+                        hiddenOutlets.push(key);
+                    }
+                    localStorage.setItem("omni_hidden_outlets", JSON.stringify(hiddenOutlets));
+                    loadTapoNodes(); // Rerender
                 });
             });
 
@@ -305,12 +344,25 @@ document.addEventListener("DOMContentLoaded", () => {
     // --- SETUP PANEL TOGGLE ---
     const btnToggleSettings = document.getElementById("btn-toggle-settings");
     const settingsPanel = document.getElementById("settings-panel");
-    
+
     btnToggleSettings.addEventListener("click", () => {
         const isHidden = settingsPanel.style.display === "none";
         settingsPanel.style.display = isHidden ? "grid" : "none";
         btnToggleSettings.classList.toggle("btn-primary", isHidden);
         btnToggleSettings.classList.toggle("btn-secondary", !isHidden);
+    });
+
+    btnToggleHidden.addEventListener("click", () => {
+        showHiddenState = !showHiddenState;
+        localStorage.setItem("omni_show_hidden", showHiddenState);
+        if (showHiddenState) {
+            btnToggleHidden.classList.add("active");
+            btnToggleHidden.innerHTML = "🙈 Hide Hidden";
+        } else {
+            btnToggleHidden.classList.remove("active");
+            btnToggleHidden.innerHTML = "👁️ Show Hidden";
+        }
+        loadTapoNodes(); // Rerender
     });
 
 

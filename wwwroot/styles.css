@@ -907,3 +907,16 @@ input:checked + .slider-knob:before {
         font-size: 1.3rem;
     }
 }
+
+/* Faded hidden outlets */
+.endpoint-outlet-card.faded-outlet {
+    opacity: 0.45;
+    border-style: dashed;
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.btn-secondary.active {
+    background: rgba(167, 139, 250, 0.15) !important;
+    border-color: var(--accent-purple) !important;
+    color: #c084fc !important;
+}
