@@ -13,6 +13,7 @@ appsettings.Development.json
 fabric.bin
 fabric.key
 names.json
+hidden.json
 
 # IDE settings
 .vs/

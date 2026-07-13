@@ -42,7 +42,7 @@ document.addEventListener("DOMContentLoaded", () => {
     
     // Hidden Outlets state
     const btnToggleHidden = document.getElementById("btn-toggle-hidden");
-    let hiddenOutlets = JSON.parse(localStorage.getItem("omni_hidden_outlets") || "[]");
+    let hiddenOutlets = [];
     let showHiddenState = localStorage.getItem("omni_show_hidden") === "true";
 
     if (showHiddenState) {
@@ -203,7 +203,11 @@ document.addEventListener("DOMContentLoaded", () => {
         tapoNodesContainer.style.opacity = "0.4";
         
         try {
-            const data = await apiRequest("/api/tapo/list");
+            const [data, hiddenList] = await Promise.all([
+                apiRequest("/api/tapo/list"),
+                apiRequest("/api/tapo/hidden")
+            ]);
+            hiddenOutlets = hiddenList;
             tapoNodesContainer.innerHTML = "";
             
             if (data.length === 0) {
@@ -319,15 +323,25 @@ document.addEventListener("DOMContentLoaded", () => {
 
             // Hook up hide/unhide button clicks
             tapoNodesContainer.querySelectorAll(".toggle-hide-ep").forEach(btn => {
-                btn.addEventListener("click", () => {
+                btn.addEventListener("click", async () => {
                     const key = btn.dataset.epKey;
-                    if (hiddenOutlets.includes(key)) {
-                        hiddenOutlets = hiddenOutlets.filter(x => x !== key);
-                    } else {
-                        hiddenOutlets.push(key);
+                    const isCurrentlyHidden = hiddenOutlets.includes(key);
+                    const newHiddenState = !isCurrentlyHidden;
+                    
+                    btn.disabled = true;
+                    try {
+                        await apiRequest("/api/tapo/hidden", "POST", { key, hidden: newHiddenState });
+                        if (newHiddenState) {
+                            if (!hiddenOutlets.includes(key)) hiddenOutlets.push(key);
+                        } else {
+                            hiddenOutlets = hiddenOutlets.filter(x => x !== key);
+                        }
+                        loadTapoNodes(); // Rerender
+                    } catch (error) {
+                        alert(`Failed to save hidden state: ${error.message}`);
+                    } finally {
+                        btn.disabled = false;
                     }
-                    localStorage.setItem("omni_hidden_outlets", JSON.stringify(hiddenOutlets));
-                    loadTapoNodes(); // Rerender
                 });
             });
 

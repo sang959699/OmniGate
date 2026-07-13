@@ -73,6 +73,7 @@ class Program
 
         // Register Singletons
         builder.Services.AddSingleton<INameService, NameService>();
+        builder.Services.AddSingleton<IHiddenService, HiddenService>();
         builder.Services.AddSingleton<ISwitchBotService, SwitchBotService>();
         builder.Services.AddSingleton<ITapoService, TapoService>();
 
@@ -256,6 +257,24 @@ class Program
             return Results.Ok(new { success = true });
         });
 
+        // 9a. Hidden Outlets: Get All
+        app.MapGet("/api/tapo/hidden", (IHiddenService service) =>
+        {
+            return Results.Ok(service.GetAllHidden());
+        });
+
+        // 9b. Hidden Outlets: Update State
+        app.MapPost("/api/tapo/hidden", (HiddenUpdateRequest request, IHiddenService service) =>
+        {
+            if (string.IsNullOrWhiteSpace(request.Key))
+            {
+                return Results.BadRequest(new { error = "Invalid key." });
+            }
+
+            service.SetHidden(request.Key, request.Hidden);
+            return Results.Ok(new { success = true });
+        });
+
         // 10. Bluetooth Scanner
         app.MapGet("/api/bluetooth/scan", async (ISwitchBotService service) =>
         {
@@ -314,8 +333,88 @@ class Program
 
 // ------------------ DTO models ------------------
 public record NameUpdateRequest(string Id, string Name);
+public record HiddenUpdateRequest(string Key, bool Hidden);
 public record CommissionRequest(string SetupCode, string? WifiSsid = null, string? WifiPassword = null);
 public record CommissionResult(bool Success, string Message, string? ConfiguredSSID = null);
+
+// ------------------ HIDDEN SERVICE ------------------
+public interface IHiddenService
+{
+    bool IsHidden(string key);
+    void SetHidden(string key, bool hidden);
+    List<string> GetAllHidden();
+}
+
+public class HiddenService : IHiddenService
+{
+    private const string HiddenFile = "hidden.json";
+    private readonly ConcurrentDictionary<string, bool> _hidden = new();
+    private readonly object _fileLock = new();
+
+    public HiddenService()
+    {
+        LoadHidden();
+    }
+
+    private void LoadHidden()
+    {
+        lock (_fileLock)
+        {
+            try
+            {
+                if (File.Exists(HiddenFile))
+                {
+                    string json = File.ReadAllText(HiddenFile);
+                    var list = JsonSerializer.Deserialize<List<string>>(json);
+                    if (list != null)
+                    {
+                        foreach (var key in list)
+                        {
+                            _hidden[key] = true;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Hidden] Failed to load hidden.json: {ex.Message}");
+            }
+        }
+    }
+
+    private void SaveHidden()
+    {
+        lock (_fileLock)
+        {
+            try
+            {
+                var list = _hidden.Where(kvp => kvp.Value).Select(kvp => kvp.Key).ToList();
+                string json = JsonSerializer.Serialize(list, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(HiddenFile, json);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Hidden] Failed to save hidden.json: {ex.Message}");
+            }
+        }
+    }
+
+    public bool IsHidden(string key)
+    {
+        return _hidden.TryGetValue(key, out bool val) && val;
+    }
+
+    public void SetHidden(string key, bool hidden)
+    {
+        _hidden[key] = hidden;
+        SaveHidden();
+    }
+
+    public List<string> GetAllHidden()
+    {
+        return _hidden.Where(kvp => kvp.Value).Select(kvp => kvp.Key).ToList();
+    }
+}
 
 // ------------------ NAMES SERVICE ------------------
 public interface INameService
