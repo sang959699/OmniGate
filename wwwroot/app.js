@@ -47,9 +47,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
     if (showHiddenState) {
         btnToggleHidden.classList.add("active");
-        btnToggleHidden.innerHTML = "🙈 Hide Hidden";
+        btnToggleHidden.innerHTML = "🙈 Hidden";
     } else {
-        btnToggleHidden.innerHTML = "👁️ Show Hidden";
+        btnToggleHidden.innerHTML = "👁️ Hidden";
     }
 
     // Clock removed from header
@@ -78,6 +78,33 @@ document.addEventListener("DOMContentLoaded", () => {
             serverStatusDot.className = "pulse-indicator";
             serverStatusDot.style.backgroundColor = "var(--color-danger)";
             throw error;
+        }
+    }
+
+    // --- CLIPBOARD FALLBACK FOR NON-SECURE CONTEXTS (HTTP) ---
+    async function copyToClipboard(text) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            try {
+                await navigator.clipboard.writeText(text);
+                return true;
+            } catch (err) {
+                console.warn("Clipboard API failed, trying fallback...", err);
+            }
+        }
+        
+        try {
+            const textarea = document.createElement("textarea");
+            textarea.value = text;
+            textarea.style.position = "fixed"; // Prevent scrolling to bottom
+            textarea.style.opacity = "0";
+            document.body.appendChild(textarea);
+            textarea.select();
+            const success = document.execCommand("copy");
+            document.body.removeChild(textarea);
+            return success;
+        } catch (err) {
+            console.error("Fallback copy failed: ", err);
+            return false;
         }
     }
 
@@ -231,7 +258,9 @@ document.addEventListener("DOMContentLoaded", () => {
                         <div class="ep-header">
                             <div class="ep-name-group">
                                 <span class="ep-name" id="lbl-ep-${node.nodeId}-${ep.endpointId}">${ep.customName}</span>
-                                <span class="ep-idx">Outlet ${ep.endpointId} &bull; ${formattedTypes}</span>
+                                ${showHiddenState ? `
+                                    <span class="ep-idx">Outlet ${ep.endpointId} &bull; ${formattedTypes}</span>
+                                ` : ''}
                             </div>
                             <label class="toggle-switch-wrapper">
                                 <input type="checkbox" 
@@ -357,10 +386,10 @@ document.addEventListener("DOMContentLoaded", () => {
         localStorage.setItem("omni_show_hidden", showHiddenState);
         if (showHiddenState) {
             btnToggleHidden.classList.add("active");
-            btnToggleHidden.innerHTML = "🙈 Hide Hidden";
+            btnToggleHidden.innerHTML = "🙈 Hidden";
         } else {
             btnToggleHidden.classList.remove("active");
-            btnToggleHidden.innerHTML = "👁️ Show Hidden";
+            btnToggleHidden.innerHTML = "👁️ Hidden";
         }
         loadTapoNodes(); // Rerender
     });
@@ -522,13 +551,16 @@ document.addEventListener("DOMContentLoaded", () => {
         // 2. Tapo Outlets
         tapoNodes.forEach(node => {
             node.endpoints.forEach(ep => {
+                const epKey = `${node.nodeId}_${ep.endpointId}`;
+                const isEpHidden = hiddenOutlets.includes(epKey);
+
                 const isSafetyLocked = false;
                 const onUrl = `http://${serverAddress}/api/tapo/${node.nodeId}/${ep.endpointId}/on`;
                 const offUrl = `http://${serverAddress}/api/tapo/${node.nodeId}/${ep.endpointId}/off`;
                 const toggleUrl = `http://${serverAddress}/api/tapo/${node.nodeId}/${ep.endpointId}/toggle`;
                 
                 html += `
-                    <tr>
+                    <tr class="${isEpHidden ? 'faded-row' : ''}">
                         <td data-label="Device / Outlet"><strong>${ep.customName}</strong><br><span style="font-size:0.75rem; color:var(--text-muted);">${node.customName} &bull; EP ${ep.endpointId}</span></td>
                         <td data-label="Trigger ON URL"><span class="shortcut-url-code" title="Click to copy">${onUrl}</span></td>
                         <td data-label="Trigger OFF URL">
@@ -555,8 +587,8 @@ document.addEventListener("DOMContentLoaded", () => {
         // Hook copy events
         tableBody.querySelectorAll(".shortcut-url-code").forEach(span => {
             if (span.textContent.startsWith("http")) {
-                span.addEventListener("click", () => {
-                    navigator.clipboard.writeText(span.textContent);
+                span.addEventListener("click", async () => {
+                    await copyToClipboard(span.textContent);
                     const origText = span.textContent;
                     span.textContent = "COPIED!";
                     span.style.color = "var(--color-success)";

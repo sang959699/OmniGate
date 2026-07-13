@@ -920,3 +920,8 @@ input:checked + .slider-knob:before {
     border-color: var(--accent-purple) !important;
     color: #c084fc !important;
 }
+
+/* Faded rows in table */
+tr.faded-row {
+    opacity: 0.45;
+}
