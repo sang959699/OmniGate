@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OmniGate</title>
+    <meta name="description" content="Local web dashboard to control Tapo P304M power strips and SwitchBot Bot over Wi-Fi and Bluetooth LE.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="background-gradients">
+        <div class="g1"></div>
+        <div class="g2"></div>
+    </div>
+
+    <div class="dashboard-wrapper">
+        <header class="app-header">
+            <div class="logo-area">
+                <span class="pulse-indicator status-online" id="server-status-dot"></span>
+                <h1>OmniGate</h1>
+            </div>
+            <button class="btn btn-secondary btn-sm" id="btn-toggle-settings" style="margin-left: auto; flex: none;">
+                ⚙️ Setup & Shortcuts
+            </button>
+        </header>
+
+        <main class="dashboard-grid">
+            <!-- 1. SwitchBot Card -->
+            <section class="glass-card" id="switchbot-card">
+                <div class="card-header">
+                    <h2>SwitchBot Bot</h2>
+                    <span class="badge" id="switchbot-conn-badge">Loading...</span>
+                </div>
+                <div class="card-content">
+                    <div class="status-row">
+                        <div class="status-item">
+                            <span class="label">Battery</span>
+                            <span class="value" id="switchbot-battery">--%</span>
+                            <div class="battery-bar-container">
+                                <div class="battery-bar" id="switchbot-battery-bar" style="width: 0%;"></div>
+                            </div>
+                        </div>
+                        <div class="status-item">
+                            <span class="label">State</span>
+                            <span class="value state-badge" id="switchbot-state">UNKNOWN</span>
+                        </div>
+                    </div>
+
+                    <div class="status-log-box" id="switchbot-log">
+                        Waiting for connection state update...
+                    </div>
+
+                    <div class="action-buttons">
+                        <button class="btn btn-primary" id="btn-switchbot-on">
+                            <span class="icon">⚡</span> Turn On
+                        </button>
+                        <button class="btn btn-secondary" id="btn-switchbot-off">
+                            <span class="icon">🔌</span> Turn Off
+                        </button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 2. Tapo Matter Strip Card -->
+            <section class="glass-card span-two" id="tapo-card">
+                <div class="card-header">
+                    <h2>Tapo Matter Power Strip</h2>
+                    <button class="btn btn-icon-only" id="btn-refresh-tapo" title="Refresh States">
+                        <svg class="icon-svg" viewBox="0 0 24 24"><path fill="currentColor" d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+                    </button>
+                </div>
+                <div class="card-content">
+                    <div class="loading-overlay" id="tapo-loading">
+                        <div class="spinner"></div>
+                        <p>Querying local Matter fabric nodes...</p>
+                    </div>
+
+                    <div id="tapo-nodes-container">
+                        <!-- Dynamically filled with Tapo Nodes -->
+                        <div class="empty-state">
+                            <p>No Tapo Matter devices found on the fabric.</p>
+                            <p class="subtext">Pair a new device using the commissioning panel below.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Collapsible Settings & Shortcuts Container -->
+            <div class="settings-container" id="settings-panel" style="display: none;">
+                <!-- 3. Bluetooth Scanner Card -->
+                <section class="glass-card" id="scanner-card">
+                    <div class="card-header">
+                        <h2>Bluetooth LE Radar</h2>
+                        <button class="btn btn-secondary btn-sm" id="btn-start-scan">Scan Network</button>
+                    </div>
+                    <div class="card-content">
+                        <p class="description">Scans for local BLE advertisements for 15s. Use this to discover your SwitchBot's MAC address.</p>
+                        
+                        <div class="scan-progress" id="scan-progress-bar" style="display: none;">
+                            <div class="progress-fill"></div>
+                            <span class="progress-text">Scanning BLE airwaves...</span>
+                        </div>
+
+                        <div class="list-container" id="ble-devices-list">
+                            <div class="empty-state">
+                                <p>Click "Scan Network" to discover local BLE devices.</p>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- 4. Matter Commissioning Card -->
+                <section class="glass-card" id="commissioning-card">
+                    <div class="card-header">
+                        <h2>Matter Provisioning Wizard</h2>
+                    </div>
+                    <div class="card-content">
+                        <p class="description">Commission a new Tapo smart plug/strip to your local Matter fabric over Wi-Fi.</p>
+                        
+                        <form class="wizard-form" id="commission-form" onsubmit="return false;">
+                            <div class="form-group">
+                                <label for="setup-code">Setup Code (PIN or QR Payload)</label>
+                                <input type="text" id="setup-code" placeholder="e.g. 0208-505-4706 or MT:Y0..." required>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="wifi-ssid">WiFi SSID (Optional)</label>
+                                <input type="text" id="wifi-ssid" placeholder="Leave blank if already on network">
+                            </div>
+
+                            <div class="form-group">
+                                <label for="wifi-pass">WiFi Password (Optional)</label>
+                                <input type="password" id="wifi-pass" placeholder="Password for network SSID">
+                            </div>
+
+                            <button type="submit" class="btn btn-primary" id="btn-submit-commission">
+                                Start Commissioning
+                            </button>
+                        </form>
+
+                        <div class="alert-box" id="commission-feedback" style="display: none;"></div>
+                    </div>
+                </section>
+
+                <!-- 5. iOS Shortcuts Assistant Card -->
+                <section class="glass-card span-two" id="shortcuts-card">
+                    <div class="card-header">
+                        <h2>iOS Shortcuts Integration Assistant</h2>
+                        <span class="badge success">POST Method</span>
+                    </div>
+                    <div class="card-content">
+                        <p class="description">Below are the custom webhook URLs for your devices. Click any URL to copy it, then paste it into your iOS Shortcuts app's "Get Contents of URL" action (set to POST).</p>
+                        
+                        <div class="table-responsive" style="overflow-x: auto; width: 100%;">
+                            <table class="shortcuts-table">
+                                <thead>
+                                    <tr>
+                                        <th>Device / Outlet</th>
+                                        <th>Trigger ON URL</th>
+                                        <th>Trigger OFF URL</th>
+                                        <th>Toggle State URL</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="shortcuts-table-body">
+                                    <!-- Dynamically populated from JS -->
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div style="margin-top: 1rem;">
+                            <h3 style="font-size: 0.95rem; margin-bottom: 0.5rem; color: var(--text-primary);">iOS Shortcut Setup Guide:</h3>
+                            <ol class="guide-list">
+                                <li>Open the <strong>Shortcuts</strong> app on iOS and create a new Shortcut.</li>
+                                <li>Search for and add the <strong>Get Contents of URL</strong> action.</li>
+                                <li>Copy one of the green URLs above and paste it into the URL field. (The dashboard automatically replaces localhost with your server's current IP address).</li>
+                                <li>Expand the action detail and set the Method to <strong>POST</strong>.</li>
+                                <li>Save and trigger the shortcut by saying <em>"Hey Siri, [Shortcut Name]"</em>!</li>
+                            </ol>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </main>
+
+        <footer class="app-footer">
+            <p>&copy; 2026 OmniGate. Built with .NET 10.0</p>
+        </footer>
+    </div>
+
+    <!-- Rename Modal Dialog -->
+    <div class="modal-backdrop" id="rename-modal" style="display: none;">
+        <div class="modal-box">
+            <h3>Rename Element</h3>
+            <p>Assign a custom display name for easy control.</p>
+            <div class="form-group">
+                <input type="text" id="rename-input" placeholder="e.g. Desk Heater plug">
+                <input type="hidden" id="rename-target-id">
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" id="btn-rename-cancel">Cancel</button>
+                <button class="btn btn-primary" id="btn-rename-save">Save Name</button>
+            </div>
+        </div>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>

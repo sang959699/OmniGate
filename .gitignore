@@ -1,0 +1,25 @@
+# .NET build directories
+bin/
+obj/
+publish/
+publish-single/
+publish-selfcontained/
+
+# Local configuration secrets
+appsettings.local.json
+appsettings.Development.json
+
+# Local Matter fabric state and naming data
+fabric.bin
+fabric.key
+names.json
+
+# IDE settings
+.vs/
+.vscode/
+*.user
+*.suo
+*.userossc
+*.sln.docstates
+
+
