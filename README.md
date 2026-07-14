@@ -16,6 +16,7 @@ Designed for low latency and high stability, OmniGate features sub-50ms executio
 * **🏷️ Persistent Custom Names**: Save custom labels for individual outlets (stored locally in `names.json` and kept out of Git).
 * **👁️ Outlet Hiding**: Hide outlets from the dashboard for a cleaner view. Hidden state is persisted server-side in `hidden.json` and shared across all frontends. Technical metadata (Node IDs, endpoint types) is only shown when the Hidden toggle is active.
 * **💻 Wake on LAN (WOL)**: Send UDP magic packets to wake a desktop PC on the local network. Configurable target MAC, broadcast IP, and port. Works from the dashboard UI, REST API, or iOS Shortcuts.
+* **🩹 Self-Healing Socket & Session Recovery**: Monitors UDP network socket status and automatically recovers from long-running socket corruption (e.g. after 24+ hours of inactivity, DHCP renewals, or sleep mode wakeups). On socket failures (`SocketException` or `"An invalid argument was supplied"`), OmniGate disposes of the stale Matter controller, clears the cache, binds to a fresh socket, and transparently auto-retries the command without dropping requests.
 
 ---
 
