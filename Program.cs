@@ -1175,6 +1175,18 @@ public class TapoService : ITapoService
         }
     }
 
+    private void ResetController()
+    {
+        lock (_controllerLock)
+        {
+            _logger.LogWarning("[Tapo] Resetting Matter controller and clearing session cache due to transport socket error...");
+            _sessionCache.Clear();
+            _fabricEnumerated = false;
+            _controller = null;
+            InitializeController();
+        }
+    }
+
     private Controller GetController()
     {
         lock (_controllerLock)
@@ -1239,100 +1251,17 @@ public class TapoService : ITapoService
 
     public async Task<List<TapoNodeDto>> ListNodesAsync(CancellationToken cancellationToken = default)
     {
-        var nodesList = new List<TapoNodeDto>();
         await _operationLock.WaitAsync(cancellationToken);
         try
         {
+            return await ListNodesInternalAsync(cancellationToken);
+        }
+        catch (Exception ex) when (ex.Message.Contains("An invalid argument was supplied", StringComparison.OrdinalIgnoreCase) || ex is SocketException)
+        {
+            _logger.LogWarning($"[Tapo] Socket error detected in ListNodesAsync ({ex.Message}). Resetting controller and retrying...");
+            ResetController();
             cancellationToken.ThrowIfCancellationRequested();
-            var controller = GetController();
-            await EnsureFabricEnumeratedAsync(controller, cancellationToken);
-            cancellationToken.ThrowIfCancellationRequested();
-
-            foreach (var node in controller.Nodes)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                SecureSession? session = null;
-                try
-                {
-                    session = await GetOrCreateSessionAsync(node, cancellationToken);
-                }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning($"[Tapo] Node {node.ID} CASE session failed (cached path): {ex.Message}. Retrying...");
-                    InvalidateSession(node.ID);
-                    cancellationToken.ThrowIfCancellationRequested();
-                    try
-                    {
-                        session = await GetOrCreateSessionAsync(node, cancellationToken);
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        throw;
-                    }
-                    catch (Exception retryEx)
-                    {
-                        _logger.LogError($"[Tapo] Node {node.ID} CASE session retry failed: {retryEx.Message}");
-                    }
-                }
-
-                var endpoints = new List<MatterEndPoint>();
-                if (node.Root != null)
-                {
-                    GetEndpointsRecursive(node.Root, endpoints);
-                }
-
-                var epDtos = new List<TapoEndpointDto>();
-
-                foreach (var ep in endpoints)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    if (ep == null) continue;
-                    ushort epIdx = GetEndpointIndex(ep);
-                    if (epIdx == 0) continue;
-
-                    string stateStr = "Unknown";
-                    if (ep.HasCluster<On_Off>())
-                    {
-                        var onOff = ep.GetCluster<On_Off>();
-                        if (session != null)
-                        {
-                            try
-                            {
-                                bool stateVal = await onOff.GetOnOff(session);
-                                stateStr = stateVal ? "ON" : "OFF";
-                            }
-                            catch (OperationCanceledException)
-                            {
-                                throw;
-                            }
-                            catch (Exception ex)
-                            {
-                                stateStr = $"Offline ({ex.Message})";
-                            }
-                        }
-                        else
-                        {
-                            stateStr = "Session Offline";
-                        }
-                    }
-
-                    epDtos.Add(new TapoEndpointDto(
-                        epIdx, 
-                        ep.DeviceTypes?.Select(t => t.ToString()).ToList() ?? new List<string>(), 
-                        stateStr
-                    ));
-                }
-
-                nodesList.Add(new TapoNodeDto(
-                    node.ID,
-                    node.Root?.ToString() ?? "Unknown",
-                    epDtos
-                ));
-            }
+            return await ListNodesInternalAsync(cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -1342,34 +1271,26 @@ public class TapoService : ITapoService
         catch (Exception ex)
         {
             _logger.LogError($"[Tapo] Critical error in ListNodesAsync: {ex.Message}");
+            return new List<TapoNodeDto>();
         }
         finally
         {
             _operationLock.Release();
         }
-
-        return nodesList;
     }
 
-    public async Task<bool> ControlOutletAsync(ulong nodeId, ushort endpointId, bool turnOn, bool toggle, CancellationToken cancellationToken = default)
+    private async Task<List<TapoNodeDto>> ListNodesInternalAsync(CancellationToken cancellationToken)
     {
+        var nodesList = new List<TapoNodeDto>();
+        cancellationToken.ThrowIfCancellationRequested();
+        var controller = GetController();
+        await EnsureFabricEnumeratedAsync(controller, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        await _operationLock.WaitAsync(cancellationToken);
-        try
+        foreach (var node in controller.Nodes)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var controller = GetController();
-            _logger.LogInformation($"[Tapo] Searching Node {nodeId} in fabric...");
-            await EnsureFabricEnumeratedAsync(controller, cancellationToken);
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var node = controller.GetNode(nodeId);
-            if (node == null)
-            {
-                throw new ArgumentException($"Node {nodeId} not found in the fabric.");
-            }
-
-            SecureSession session;
+            SecureSession? session = null;
             try
             {
                 session = await GetOrCreateSessionAsync(node, cancellationToken);
@@ -1380,67 +1301,87 @@ public class TapoService : ITapoService
             }
             catch (Exception ex)
             {
-                _logger.LogWarning($"[Tapo] Cached session retrieval failed for Node {nodeId}: {ex.Message}. Retrying with fresh session...");
-                InvalidateSession(nodeId);
-                cancellationToken.ThrowIfCancellationRequested();
-                session = await GetOrCreateSessionAsync(node, cancellationToken);
+                _logger.LogWarning($"[Tapo] CASE session failed (cached path): {ex.Message}. Retrying...");
+                InvalidateSession(node.ID);
+                try
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    session = await GetOrCreateSessionAsync(node, cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception retryEx)
+                {
+                    _logger.LogError($"[Tapo] Node {node.ID} CASE session retry failed: {retryEx.Message}");
+                }
             }
 
+            var endpoints = new List<MatterEndPoint>();
+            if (node.Root != null)
+            {
+                GetEndpointsRecursive(node.Root, endpoints);
+            }
+
+            var epDtos = new List<TapoEndpointDto>();
+
+            foreach (var ep in endpoints)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (ep == null) continue;
+                ushort epIdx = GetEndpointIndex(ep);
+                if (epIdx == 0) continue;
+
+                string stateStr = "OFF";
+                if (session != null)
+                {
+                    try
+                    {
+                        var onOff = new On_Off(epIdx);
+                        var stateVal = await onOff.GetOnOff(session);
+                        stateStr = stateVal ? "ON" : "OFF";
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch
+                    {
+                        // Fallback/Silent on read failure
+                    }
+                }
+
+                epDtos.Add(new TapoEndpointDto(
+                    epIdx, 
+                    ep.DeviceTypes?.Select(t => t.ToString()).ToList() ?? new List<string>(), 
+                    stateStr
+                ));
+            }
+
+            nodesList.Add(new TapoNodeDto(
+                node.ID,
+                node.Root?.ToString() ?? "Unknown",
+                epDtos
+            ));
+        }
+
+        return nodesList;
+    }
+
+    public async Task<bool> ControlOutletAsync(ulong nodeId, ushort endpointId, bool turnOn, bool toggle, CancellationToken cancellationToken = default)
+    {
+        await _operationLock.WaitAsync(cancellationToken);
+        try
+        {
+            return await ControlOutletInternalAsync(nodeId, endpointId, turnOn, toggle, cancellationToken);
+        }
+        catch (Exception ex) when (ex.Message.Contains("An invalid argument was supplied", StringComparison.OrdinalIgnoreCase) || ex is SocketException)
+        {
+            _logger.LogWarning($"[Tapo] Socket error detected in ControlOutletAsync ({ex.Message}). Resetting controller and retrying...");
+            ResetController();
             cancellationToken.ThrowIfCancellationRequested();
-            var ep = FindEndPoint(node.Root, endpointId);
-            if (ep == null)
-            {
-                _logger.LogWarning($"[Tapo] Endpoint {endpointId} not found in discovery. Attempting direct control anyway...");
-            }
-
-            var onOff = new On_Off(endpointId);
-            bool success = false;
-            string actionStr = toggle ? "Toggle" : (turnOn ? "ON" : "OFF");
-            
-            _logger.LogInformation($"[Tapo] Sending command '{actionStr}' to Node {nodeId}, Endpoint {endpointId}...");
-
-            try
-            {
-                if (toggle)
-                {
-                    success = await onOff.Toggle(session);
-                }
-                else if (turnOn)
-                {
-                    success = await onOff.On(session);
-                }
-                else
-                {
-                    success = await onOff.Off(session);
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception cmdEx)
-            {
-                _logger.LogWarning($"[Tapo] Command execution failed: {cmdEx.Message}. Invalidating session and retrying...");
-                InvalidateSession(nodeId);
-                cancellationToken.ThrowIfCancellationRequested();
-                session = await GetOrCreateSessionAsync(node, cancellationToken);
-                cancellationToken.ThrowIfCancellationRequested();
-                
-                if (toggle)
-                {
-                    success = await onOff.Toggle(session);
-                }
-                else if (turnOn)
-                {
-                    success = await onOff.On(session);
-                }
-                else
-                {
-                    success = await onOff.Off(session);
-                }
-            }
-
-            return success;
+            return await ControlOutletInternalAsync(nodeId, endpointId, turnOn, toggle, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -1451,6 +1392,94 @@ public class TapoService : ITapoService
         {
             _operationLock.Release();
         }
+    }
+
+    private async Task<bool> ControlOutletInternalAsync(ulong nodeId, ushort endpointId, bool turnOn, bool toggle, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var controller = GetController();
+        _logger.LogInformation($"[Tapo] Searching Node {nodeId} in fabric...");
+        await EnsureFabricEnumeratedAsync(controller, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var node = controller.GetNode(nodeId);
+        if (node == null)
+        {
+            throw new ArgumentException($"Node {nodeId} not found in the fabric.");
+        }
+
+        SecureSession session;
+        try
+        {
+            session = await GetOrCreateSessionAsync(node, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning($"[Tapo] Cached session retrieval failed for Node {nodeId}: {ex.Message}. Retrying with fresh session...");
+            InvalidateSession(nodeId);
+            cancellationToken.ThrowIfCancellationRequested();
+            session = await GetOrCreateSessionAsync(node, cancellationToken);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var ep = FindEndPoint(node.Root, endpointId);
+        if (ep == null)
+        {
+            _logger.LogWarning($"[Tapo] Endpoint {endpointId} not found in discovery. Attempting direct control anyway...");
+        }
+
+        var onOff = new On_Off(endpointId);
+        bool success = false;
+        string actionStr = toggle ? "Toggle" : (turnOn ? "ON" : "OFF");
+        
+        _logger.LogInformation($"[Tapo] Sending command '{actionStr}' to Node {nodeId}, Endpoint {endpointId}...");
+
+        try
+        {
+            if (toggle)
+            {
+                success = await onOff.Toggle(session);
+            }
+            else if (turnOn)
+            {
+                success = await onOff.On(session);
+            }
+            else
+            {
+                success = await onOff.Off(session);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception cmdEx)
+        {
+            _logger.LogWarning($"[Tapo] Command execution failed: {cmdEx.Message}. Invalidating session and retrying...");
+            InvalidateSession(nodeId);
+            cancellationToken.ThrowIfCancellationRequested();
+            session = await GetOrCreateSessionAsync(node, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            
+            if (toggle)
+            {
+                success = await onOff.Toggle(session);
+            }
+            else if (turnOn)
+            {
+                success = await onOff.On(session);
+            }
+            else
+            {
+                success = await onOff.Off(session);
+            }
+        }
+
+        return success;
     }
 
     public async Task<CommissionResult> CommissionNodeAsync(string setupCode, string? wifiSsid, string? wifiPassword)

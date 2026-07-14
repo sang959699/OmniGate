@@ -1,6 +1,6 @@
 # OmniGate 🎛️
 
-OmniGate is a unified, high-performance, and lightweight local smart home controller backend and web dashboard. It enables instant local control of **Tapo P304M Matter Power Strips** (via Wi-Fi/Matter) and **SwitchBot Bots** (via Bluetooth LE) from a single Web UI or REST API webhooks.
+OmniGate is a unified, high-performance, and lightweight local smart home controller backend and web dashboard. It enables instant local control of **Tapo P304M Matter Power Strips** (via Wi-Fi/Matter), **SwitchBot Bots** (via Bluetooth LE), and **Wake on LAN** (via UDP broadcast) from a single Web UI or REST API webhooks.
 
 Designed for low latency and high stability, OmniGate features sub-50ms execution times and robust hardware serialization lockouts to prevent overlapping radio conflicts.
 
@@ -11,9 +11,11 @@ Designed for low latency and high stability, OmniGate features sub-50ms executio
 * **⚡ Ultra-Low Latency Matter Control**: Implements Secure CASE session caching. Bypasses slow mDNS and Sigma key exchanges to send commands to Tapo outlets in **under 50ms** (down from 2-3 seconds).
 * **🔋 Battery-Safe BLE Optimization**: Employs Windows GATT database caching to connect to SwitchBot Bots in under 1 second. Utilizes a smart **10-second active session keep-alive** to make consecutive commands **instantaneous (~10ms)** while conserving the CR2 battery.
 * **🛡️ Hardware Serialization Lock & Cancel Protection**: Integrates a sequential hardware semaphore lock and propagates ASP.NET Core `CancellationToken` signals. If you refresh the dashboard or spam commands, old requests are immediately evicted from the queues, preventing the Tapo strip from returning `BUSY` or getting stuck.
-* **📱 Premium Mobile-Responsive Dashboard**: A modern, glassmorphic dark-theme Web UI. Collapses setting panels (BLE Radar, Matter Provisioning Wizard, iOS Shortcut Integration assistant) and reflows tables into cards on screens under 768px.
-* **🔗 iOS Shortcuts Integration**: Custom assistant that generates ready-to-use Siri Shortcuts (POST webhooks) to toggle or trigger your outlets and switches hands-free.
+* **📱 Premium Mobile-Responsive Dashboard**: A modern, glassmorphic dark-theme Web UI. Collapses setting panels (BLE Radar, Matter Provisioning Wizard, Wake on LAN, iOS Shortcut Integration assistant) and reflows tables into cards on screens under 768px.
+* **🔗 iOS Shortcuts Integration**: Custom assistant that generates ready-to-use Siri Shortcuts (POST webhooks) to toggle or trigger your outlets, switches, and Wake on LAN hands-free.
 * **🏷️ Persistent Custom Names**: Save custom labels for individual outlets (stored locally in `names.json` and kept out of Git).
+* **👁️ Outlet Hiding**: Hide outlets from the dashboard for a cleaner view. Hidden state is persisted server-side in `hidden.json` and shared across all frontends. Technical metadata (Node IDs, endpoint types) is only shown when the Hidden toggle is active.
+* **💻 Wake on LAN (WOL)**: Send UDP magic packets to wake a desktop PC on the local network. Configurable target MAC, broadcast IP, and port. Works from the dashboard UI, REST API, or iOS Shortcuts.
 
 ---
 
@@ -31,20 +33,41 @@ Designed for low latency and high stability, OmniGate features sub-50ms executio
 * **Hardware**:
   * Tapo P304M Matter Power Strip (commissioned on local Wi-Fi).
   * SwitchBot Bot (within BLE range of the host PC).
+  * Desktop PC with Wake on LAN enabled in BIOS (optional).
 
-### Configuration (`appsettings.json`)
-The application is pre-configured to run locally. To define your physical SwitchBot MAC address, create an `appsettings.local.json` file in the root directory:
+### Configuration
+
+The application reads from `appsettings.json` (defaults) and `appsettings.local.json` (local secrets/overrides). Only `appsettings.local.json` should contain real device addresses — it is automatically ignored by Git.
+
+Create an `appsettings.local.json` file in the root directory:
 
 ```json
 {
   "SwitchBot": {
-    "MacAddress": "E8:09:12:F0:B9:C5",
-    "ListenUrl": "http://0.0.0.0:5000"
+    "MacAddress": "YOUR:SWITCHBOT:MAC:ADDRESS"
+  },
+  "WakeOnLan": {
+    "TargetMacAddress": "YOUR-PC-MAC-ADDRESS",
+    "BroadcastIP": "192.168.1.255"
   }
 }
 ```
 
-*Note: Your `appsettings.local.json` is automatically ignored by Git and will not leak if you push to public repos.*
+#### Configuration Reference
+
+| Section | Key | Default | Description |
+|---|---|---|---|
+| `SwitchBot` | `MacAddress` | `00:00:00:00:00:00` | BLE MAC address of your SwitchBot Bot |
+| `SwitchBot` | `ListenUrl` | `http://0.0.0.0:5000` | HTTP server bind address |
+| `SwitchBot` | `EnableBackgroundWatcher` | `false` | Passive BLE scanning to warm connection cache |
+| `Tapo` | `FabricFile` | `fabric.bin` | Matter fabric state file path |
+| `Tapo` | `KeyFile` | `fabric.key` | Matter private key file path |
+| `Tapo` | `SafetyLockEndpoint` | `4` | Endpoint ID protected by safety lock |
+| `WakeOnLan` | `TargetMacAddress` | `00:00:00:00:00:00` | MAC address of the PC to wake |
+| `WakeOnLan` | `BroadcastIP` | `255.255.255.255` | Subnet broadcast IP (e.g. `192.168.1.255`) |
+| `WakeOnLan` | `Port` | `9` | UDP port for magic packet |
+
+> **Note**: Use your subnet-directed broadcast (e.g. `192.168.1.255` for a `192.168.1.0/24` network) instead of `255.255.255.255` for reliable WOL delivery.
 
 ### Running the App
 Download the compiled release folder, open a command prompt inside it, and run:
@@ -65,16 +88,25 @@ OmniGate exposes a simple REST API that makes it easy to integrate with iOS Shor
 * **`POST /api/tapo/{nodeId}/{endpointId}/off`**: Turns a specific outlet OFF.
 * **`POST /api/tapo/{nodeId}/{endpointId}/toggle`**: Toggles the outlet state.
 
-*Note: Outlets are protected by a safety lock mechanism (by default, Endpoint 4 is locked to prevent turning off the host server PC).*
-
 ### SwitchBot Bot (Bluetooth LE)
 * **`GET /api/switchbot/status`**: Returns the connection state, battery level, and last notification payload.
 * **`POST /api/switchbot/on`**: Presses/Turns on the SwitchBot.
 * **`POST /api/switchbot/off`**: Presses/Turns off the SwitchBot.
 
+### Wake on LAN
+* **`POST /api/wol/wake`**: Sends a UDP magic packet to wake the configured PC. Accepts an optional JSON body to override defaults:
+  ```json
+  { "macAddress": "AA:BB:CC:DD:EE:FF", "broadcastIp": "192.168.1.255", "port": 9 }
+  ```
+  All fields are optional — if omitted, server-side `appsettings.local.json` values are used.
+
 ### Custom Labels
 * **`GET /api/names`**: Retrieves all custom device labels.
 * **`POST /api/names`**: Updates a custom label (takes JSON body `{ "id": "nodeId_endpointId", "name": "Desk Lamp" }`).
+
+### Hidden Outlets
+* **`GET /api/tapo/hidden`**: Returns the list of hidden outlet keys.
+* **`POST /api/tapo/hidden`**: Updates the hidden state (takes JSON body `{ "key": "nodeId_endpointId", "hidden": true }`).
 
 ---
 
