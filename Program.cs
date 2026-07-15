@@ -1220,6 +1220,7 @@ public class TapoService : ITapoService
         catch (Exception ex)
         {
             _logger.LogError($"[Tapo] Initial EnumerateFabric failed: {ex.Message}");
+            throw;
         }
         finally
         {
