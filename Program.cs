@@ -46,12 +46,12 @@ class Program
         {
             var harmony = new Harmony("com.omnigate.patch");
             harmony.PatchAll();
-            Console.WriteLine("[System] Harmony patches applied successfully for MatterDotNet.");
+            Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [System] Harmony patches applied successfully for MatterDotNet.");
         }
         catch (Exception ex)
         {
             Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine($"[Error] Failed to apply runtime patches: {ex.Message}");
+            Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [Error] Failed to apply runtime patches: {ex.Message}");
             Console.ResetColor();
         }
 
@@ -63,7 +63,11 @@ class Program
 
         // Configure Logging
         builder.Logging.ClearProviders();
-        builder.Logging.AddConsole();
+        builder.Logging.AddSimpleConsole(options =>
+        {
+            options.TimestampFormat = "[yyyy-MM-dd HH:mm:ss] ";
+            options.SingleLine = false;
+        });
         builder.Logging.SetMinimumLevel(LogLevel.Information);
 
         // CORS Policy for Local Subnet/iOS Shortcut Access
@@ -355,7 +359,7 @@ class Program
             }
         });
 
-        Console.WriteLine($"[Server] Starting HTTP REST API Server on {listenUrl}...");
+        Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [Server] Starting HTTP REST API Server on {listenUrl}...");
         await app.RunAsync(listenUrl);
     }
 }
@@ -407,7 +411,7 @@ public class HiddenService : IHiddenService
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[Hidden] Failed to load hidden.json: {ex.Message}");
+                Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [Hidden] Failed to load hidden.json: {ex.Message}");
             }
         }
     }
@@ -424,7 +428,7 @@ public class HiddenService : IHiddenService
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[Hidden] Failed to save hidden.json: {ex.Message}");
+                Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [Hidden] Failed to save hidden.json: {ex.Message}");
             }
         }
     }
@@ -545,7 +549,7 @@ public class NameService : INameService
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[Names] Failed to load names.json: {ex.Message}");
+                Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [Names] Failed to load names.json: {ex.Message}");
             }
         }
     }
@@ -561,7 +565,7 @@ public class NameService : INameService
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[Names] Failed to save names.json: {ex.Message}");
+                Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [Names] Failed to save names.json: {ex.Message}");
             }
         }
     }
@@ -635,7 +639,7 @@ public class SwitchBotService : ISwitchBotService
     {
         _macAddressStr = _config["SwitchBot:MacAddress"] ?? "00:00:00:00:00:00";
         _targetMacAddress = Convert.ToUInt64(_macAddressStr.Replace(":", ""), 16);
-        Console.WriteLine($"[SwitchBot] Configured device with MAC: {_macAddressStr}");
+        Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [SwitchBot] Configured device with MAC: {_macAddressStr}");
     }
 
     public void QueueCommand(byte[] command)
@@ -1126,7 +1130,11 @@ public class TapoService : ITapoService
     private bool _fabricEnumerated = false;
     private readonly SemaphoreSlim _fabricLock = new SemaphoreSlim(1, 1);
     private readonly ConcurrentDictionary<ulong, SecureSession> _sessionCache = new();
+    private readonly ConcurrentDictionary<ulong, DateTime> _sessionTimestamps = new();
     private readonly SemaphoreSlim _operationLock = new SemaphoreSlim(1, 1);
+
+    // Sessions are evicted proactively before the ~1hr Matter session expiry
+    private static readonly TimeSpan SessionTtl = TimeSpan.FromMinutes(45);
 
     public TapoService(IConfiguration config, ILogger<TapoService> logger)
     {
@@ -1175,14 +1183,47 @@ public class TapoService : ITapoService
         }
     }
 
+    private void DisposeSessionSockets()
+    {
+        // Dispose underlying MRPConnection UDP sockets via reflection so the
+        // port is freed before a new Controller tries to bind to the same address.
+        foreach (var kvp in _sessionCache)
+        {
+            try
+            {
+                var session = kvp.Value;
+                var connProp = session.GetType()
+                    .GetProperty("Connection", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                    ?? session.GetType().BaseType?
+                        .GetProperty("Connection", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+
+                var conn = connProp?.GetValue(session);
+                if (conn is IDisposable disposableConn)
+                {
+                    disposableConn.Dispose();
+                    _logger.LogDebug($"[Tapo] Disposed MRPConnection socket for Node {kvp.Key}.");
+                }
+                session.Dispose();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug($"[Tapo] Session dispose error for Node {kvp.Key}: {ex.Message}");
+            }
+        }
+    }
+
     private void ResetController()
     {
         lock (_controllerLock)
         {
             _logger.LogWarning("[Tapo] Resetting Matter controller and clearing session cache due to transport socket error...");
+            DisposeSessionSockets();
             _sessionCache.Clear();
+            _sessionTimestamps.Clear();
             _fabricEnumerated = false;
             _controller = null;
+            // Allow leaked async receive tasks to release the port
+            Thread.Sleep(200);
             InitializeController();
         }
     }
@@ -1228,24 +1269,55 @@ public class TapoService : ITapoService
         }
     }
 
+    private bool IsSessionExpired(ulong nodeId)
+    {
+        if (_sessionTimestamps.TryGetValue(nodeId, out var created))
+        {
+            return DateTime.UtcNow - created > SessionTtl;
+        }
+        return false;
+    }
+
     private async Task<SecureSession> GetOrCreateSessionAsync(Node node, CancellationToken cancellationToken)
     {
+        // Proactively evict sessions older than the TTL before the Matter device
+        // closes them server-side (which yields "An invalid argument was supplied").
         if (_sessionCache.TryGetValue(node.ID, out var cachedSession))
         {
-            return cachedSession;
+            if (!IsSessionExpired(node.ID))
+            {
+                return cachedSession;
+            }
+
+            _logger.LogInformation($"[Tapo] Session TTL expired for Node {node.ID}. Refreshing session proactively...");
+            InvalidateSession(node.ID);
         }
 
         cancellationToken.ThrowIfCancellationRequested();
         _logger.LogInformation($"[Tapo] Establishing Secure CASE session with Node {node.ID} (Cache Miss)...");
         var session = await node.GetCASESession();
         _sessionCache[node.ID] = session;
+        _sessionTimestamps[node.ID] = DateTime.UtcNow;
         return session;
     }
 
     private void InvalidateSession(ulong nodeId)
     {
+        _sessionTimestamps.TryRemove(nodeId, out _);
         if (_sessionCache.TryRemove(nodeId, out var session))
         {
+            try
+            {
+                var connProp = session.GetType()
+                    .GetProperty("Connection", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                    ?? session.GetType().BaseType?
+                        .GetProperty("Connection", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var conn = connProp?.GetValue(session);
+                if (conn is IDisposable disposableConn)
+                    disposableConn.Dispose();
+                session.Dispose();
+            }
+            catch { }
             _logger.LogInformation($"[Tapo] Invalidated secure session cache for Node {nodeId}.");
         }
     }
