@@ -1135,6 +1135,9 @@ public class TapoService : ITapoService
 
     // Sessions are evicted proactively before the ~1hr Matter session expiry
     private static readonly TimeSpan SessionTtl = TimeSpan.FromMinutes(45);
+    // MatterDotNet does not expose cancellation tokens for its network calls.
+    // Bound normal operations so a lost device cannot hold the singleton lock forever.
+    private static readonly TimeSpan MatterOperationTimeout = TimeSpan.FromSeconds(20);
 
     public TapoService(IConfiguration config, ILogger<TapoService> logger)
     {
@@ -1254,7 +1257,7 @@ public class TapoService : ITapoService
             if (!_fabricEnumerated)
             {
                 _logger.LogInformation("[Tapo] Performing initial fabric enumeration...");
-                await controller.EnumerateFabric();
+                await AwaitMatterAsync(controller.EnumerateFabric(), "fabric enumeration");
                 _fabricEnumerated = true;
             }
         }
@@ -1278,6 +1281,44 @@ public class TapoService : ITapoService
         return false;
     }
 
+    private bool HasExpiredSession()
+    {
+        return _sessionTimestamps.Any(entry => DateTime.UtcNow - entry.Value > SessionTtl);
+    }
+
+    private void ResetControllerIfSessionExpired()
+    {
+        if (!HasExpiredSession()) return;
+
+        _logger.LogInformation("[Tapo] A cached session reached its TTL. Resetting controller before this operation...");
+        ResetController();
+    }
+
+    private async Task<T> AwaitMatterAsync<T>(Task<T> operation, string description)
+    {
+        await AwaitMatterAsync((Task)operation, description);
+        return await operation;
+    }
+
+    private async Task AwaitMatterAsync(Task operation, string description)
+    {
+        try
+        {
+            await operation.WaitAsync(MatterOperationTimeout);
+        }
+        catch (TimeoutException ex)
+        {
+            // The library cannot cancel an in-flight UDP operation. Observe a late
+            // fault while the caller resets the controller and retries once.
+            _ = operation.ContinueWith(
+                task => _logger.LogDebug(task.Exception, "[Tapo] Timed-out {Description} completed with an error.", description),
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted,
+                TaskScheduler.Default);
+            throw new TimeoutException($"Matter {description} timed out after {MatterOperationTimeout.TotalSeconds:0} seconds.", ex);
+        }
+    }
+
     /// <summary>
     /// Returns true if the exception indicates a transport-level failure that
     /// requires a full controller reset (stale socket, disposed UdpClient, etc).
@@ -1286,6 +1327,8 @@ public class TapoService : ITapoService
     {
         if (ex is SocketException) return true;
         if (ex is ObjectDisposedException) return true;
+        if (ex is IOException) return true;
+        if (ex is TimeoutException) return true;
 
         var msg = ex.Message;
         if (msg.Contains("An invalid argument was supplied", StringComparison.OrdinalIgnoreCase)) return true;
@@ -1323,7 +1366,7 @@ public class TapoService : ITapoService
                 throw new InvalidOperationException($"Node {node.ID} not found after controller reset.");
 
             _logger.LogInformation($"[Tapo] Establishing Secure CASE session with Node {freshNode.ID} (Post-Reset)...");
-            var freshSession = await freshNode.GetCASESession();
+            var freshSession = await AwaitMatterAsync(freshNode.GetCASESession(), $"CASE session setup for Node {freshNode.ID}");
             _sessionCache[freshNode.ID] = freshSession;
             _sessionTimestamps[freshNode.ID] = DateTime.UtcNow;
             return freshSession;
@@ -1331,7 +1374,7 @@ public class TapoService : ITapoService
 
         cancellationToken.ThrowIfCancellationRequested();
         _logger.LogInformation($"[Tapo] Establishing Secure CASE session with Node {node.ID} (Cache Miss)...");
-        var session = await node.GetCASESession();
+        var session = await AwaitMatterAsync(node.GetCASESession(), $"CASE session setup for Node {node.ID}");
         _sessionCache[node.ID] = session;
         _sessionTimestamps[node.ID] = DateTime.UtcNow;
         return session;
@@ -1384,6 +1427,7 @@ public class TapoService : ITapoService
     {
         var nodesList = new List<TapoNodeDto>();
         cancellationToken.ThrowIfCancellationRequested();
+        ResetControllerIfSessionExpired();
         var controller = GetController();
         await EnsureFabricEnumeratedAsync(controller, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
@@ -1400,6 +1444,10 @@ public class TapoService : ITapoService
             {
                 throw;
             }
+            catch (Exception ex) when (IsTransportError(ex))
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 _logger.LogWarning($"[Tapo] CASE session failed (cached path): {ex.Message}. Retrying...");
@@ -1410,6 +1458,10 @@ public class TapoService : ITapoService
                     session = await GetOrCreateSessionAsync(node, cancellationToken);
                 }
                 catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception retryEx) when (IsTransportError(retryEx))
                 {
                     throw;
                 }
@@ -1434,22 +1486,27 @@ public class TapoService : ITapoService
                 ushort epIdx = GetEndpointIndex(ep);
                 if (epIdx == 0) continue;
 
-                string stateStr = "OFF";
+                string stateStr = "UNKNOWN";
                 if (session != null)
                 {
                     try
                     {
                         var onOff = new On_Off(epIdx);
-                        var stateVal = await onOff.GetOnOff(session);
+                        var stateVal = await AwaitMatterAsync(onOff.GetOnOff(session), $"state read for Node {node.ID}, Endpoint {epIdx}");
                         stateStr = stateVal ? "ON" : "OFF";
                     }
                     catch (OperationCanceledException)
                     {
                         throw;
                     }
-                    catch
+                    catch (Exception ex) when (IsTransportError(ex))
                     {
-                        // Fallback/Silent on read failure
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning($"[Tapo] State read failed for Node {node.ID}, Endpoint {epIdx}: {ex.Message}");
+                        InvalidateSession(node.ID);
                     }
                 }
 
@@ -1495,9 +1552,29 @@ public class TapoService : ITapoService
         }
     }
 
+    private async Task<bool> ExecuteOnOffCommandAsync(On_Off onOff, SecureSession session, bool turnOn, bool toggle, ulong nodeId, ushort endpointId)
+    {
+        Task<bool> operation;
+        if (toggle)
+        {
+            operation = onOff.Toggle(session);
+        }
+        else if (turnOn)
+        {
+            operation = onOff.On(session);
+        }
+        else
+        {
+            operation = onOff.Off(session);
+        }
+
+        return await AwaitMatterAsync(operation, $"command for Node {nodeId}, Endpoint {endpointId}");
+    }
+
     private async Task<bool> ControlOutletInternalAsync(ulong nodeId, ushort endpointId, bool turnOn, bool toggle, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        ResetControllerIfSessionExpired();
         var controller = GetController();
         _logger.LogInformation($"[Tapo] Searching Node {nodeId} in fabric...");
         await EnsureFabricEnumeratedAsync(controller, cancellationToken);
@@ -1541,20 +1618,13 @@ public class TapoService : ITapoService
 
         try
         {
-            if (toggle)
-            {
-                success = await onOff.Toggle(session);
-            }
-            else if (turnOn)
-            {
-                success = await onOff.On(session);
-            }
-            else
-            {
-                success = await onOff.Off(session);
-            }
+            success = await ExecuteOnOffCommandAsync(onOff, session, turnOn, toggle, nodeId, endpointId);
         }
         catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception cmdEx) when (IsTransportError(cmdEx))
         {
             throw;
         }
@@ -1565,25 +1635,26 @@ public class TapoService : ITapoService
             cancellationToken.ThrowIfCancellationRequested();
             session = await GetOrCreateSessionAsync(node, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
-            
-            if (toggle)
-            {
-                success = await onOff.Toggle(session);
-            }
-            else if (turnOn)
-            {
-                success = await onOff.On(session);
-            }
-            else
-            {
-                success = await onOff.Off(session);
-            }
+            success = await ExecuteOnOffCommandAsync(onOff, session, turnOn, toggle, nodeId, endpointId);
         }
 
         return success;
     }
 
     public async Task<CommissionResult> CommissionNodeAsync(string setupCode, string? wifiSsid, string? wifiPassword)
+    {
+        await _operationLock.WaitAsync();
+        try
+        {
+            return await CommissionNodeInternalAsync(setupCode, wifiSsid, wifiPassword);
+        }
+        finally
+        {
+            _operationLock.Release();
+        }
+    }
+
+    private async Task<CommissionResult> CommissionNodeInternalAsync(string setupCode, string? wifiSsid, string? wifiPassword)
     {
         var controller = GetController();
         _logger.LogInformation($"[Tapo] Parsing Setup Code '{setupCode}'...");
@@ -1600,7 +1671,7 @@ public class TapoService : ITapoService
 
         _logger.LogInformation($"[Tapo] Starting Commissioning for Vendor: {payload.VendorID}, Product: {payload.ProductID}...");
         
-        CommissioningState state = await controller.StartCommissioning(payload, "", VerificationLevel.AnyDevice);
+        CommissioningState state = await AwaitMatterAsync(controller.StartCommissioning(payload, "", VerificationLevel.AnyDevice), "commissioning start");
         _logger.LogInformation("[Tapo] Operational Discovery handshake complete.");
 
         if (state.WiFiNetworks != null && state.WiFiNetworks.Length > 0)
@@ -1619,7 +1690,7 @@ public class TapoService : ITapoService
 
                 string ssidStr = Encoding.UTF8.GetString(targetWifi.SSID);
                 _logger.LogInformation($"[Tapo] Provisioning credentials to WiFi: {ssidStr}");
-                await controller.CompleteCommissioning(state, targetWifi, wifiPassword ?? "");
+                await AwaitMatterAsync(controller.CompleteCommissioning(state, targetWifi, wifiPassword ?? ""), "commissioning completion");
                 
                 controller.Save(_fabricFile, _keyFile);
                 _fabricEnumerated = false;
@@ -1637,7 +1708,7 @@ public class TapoService : ITapoService
         else
         {
             _logger.LogInformation("[Tapo] Device already on local IP. Completing commissioning...");
-            await controller.CompleteCommissioning(state);
+            await AwaitMatterAsync(controller.CompleteCommissioning(state), "commissioning completion");
             
             controller.Save(_fabricFile, _keyFile);
             _fabricEnumerated = false;
@@ -1647,6 +1718,19 @@ public class TapoService : ITapoService
 
     public async Task<bool> RemoveNodeAsync(ulong nodeId)
     {
+        await _operationLock.WaitAsync();
+        try
+        {
+            return await RemoveNodeInternalAsync(nodeId);
+        }
+        finally
+        {
+            _operationLock.Release();
+        }
+    }
+
+    private async Task<bool> RemoveNodeInternalAsync(ulong nodeId)
+    {
         var controller = GetController();
         var node = controller.GetNode(nodeId);
         if (node == null)
@@ -1655,7 +1739,8 @@ public class TapoService : ITapoService
         }
 
         _logger.LogInformation($"[Tapo] Removing Node {nodeId} from fabric...");
-        await controller.RemoveNode(node);
+        await AwaitMatterAsync(controller.RemoveNode(node), $"removal of Node {nodeId}");
+        InvalidateSession(nodeId);
         controller.Save(_fabricFile, _keyFile);
         _fabricEnumerated = false;
         return true;
@@ -1666,8 +1751,9 @@ public class TapoService : ITapoService
         // Cancel/reset state if incomplete
         try
         {
-            // Note: MatterDotNet controller manages intermediate states. Re-loading works as a fallback reset.
-            InitializeController();
+            // MatterDotNet does not expose an explicit abort API; a full reset is
+            // the safest way to discard incomplete commissioning state.
+            ResetController();
         }
         catch { }
     }
