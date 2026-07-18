@@ -1186,47 +1186,18 @@ public class TapoService : ITapoService
         }
     }
 
-    private void DisposeSessionSockets()
-    {
-        // Dispose underlying MRPConnection UDP sockets via reflection so the
-        // port is freed before a new Controller tries to bind to the same address.
-        foreach (var kvp in _sessionCache)
-        {
-            try
-            {
-                var session = kvp.Value;
-                var connProp = session.GetType()
-                    .GetProperty("Connection", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
-                    ?? session.GetType().BaseType?
-                        .GetProperty("Connection", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-
-                var conn = connProp?.GetValue(session);
-                if (conn is IDisposable disposableConn)
-                {
-                    disposableConn.Dispose();
-                    _logger.LogDebug($"[Tapo] Disposed MRPConnection socket for Node {kvp.Key}.");
-                }
-                session.Dispose();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug($"[Tapo] Session dispose error for Node {kvp.Key}: {ex.Message}");
-            }
-        }
-    }
-
     private void ResetController()
     {
         lock (_controllerLock)
         {
-            _logger.LogWarning("[Tapo] Resetting Matter controller and clearing session cache due to transport socket error...");
-            DisposeSessionSockets();
+            _logger.LogWarning("[Tapo] Resetting Matter controller and clearing session cache...");
+            // MatterDotNet reuses its MRP UDP transport across controller instances.
+            // Disposing it via reflection leaves every subsequently loaded controller
+            // with a disposed UdpClient, as seen after the session TTL elapsed.
             _sessionCache.Clear();
             _sessionTimestamps.Clear();
             _fabricEnumerated = false;
             _controller = null;
-            // Allow leaked async receive tasks to release the port
-            Thread.Sleep(200);
             InitializeController();
         }
     }
@@ -1383,9 +1354,8 @@ public class TapoService : ITapoService
     private void InvalidateSession(ulong nodeId)
     {
         // Only remove from cache — do NOT dispose the connection socket here.
-        // The MRPConnection is shared by the Controller; disposing it kills
-        // the transport for all future operations. Socket disposal only
-        // happens in ResetController() / DisposeSessionSockets().
+        // The MRPConnection is shared by MatterDotNet controllers; this service
+        // only removes the stale cache entry and leaves transport ownership to it.
         _sessionTimestamps.TryRemove(nodeId, out _);
         if (_sessionCache.TryRemove(nodeId, out _))
         {
