@@ -1278,6 +1278,26 @@ public class TapoService : ITapoService
         return false;
     }
 
+    /// <summary>
+    /// Returns true if the exception indicates a transport-level failure that
+    /// requires a full controller reset (stale socket, disposed UdpClient, etc).
+    /// </summary>
+    private static bool IsTransportError(Exception ex)
+    {
+        if (ex is SocketException) return true;
+        if (ex is ObjectDisposedException) return true;
+
+        var msg = ex.Message;
+        if (msg.Contains("An invalid argument was supplied", StringComparison.OrdinalIgnoreCase)) return true;
+        if (msg.Contains("disposed object", StringComparison.OrdinalIgnoreCase)) return true;
+        if (msg.Contains("UdpClient", StringComparison.OrdinalIgnoreCase)) return true;
+
+        // Also check inner exceptions
+        if (ex.InnerException != null) return IsTransportError(ex.InnerException);
+
+        return false;
+    }
+
     private async Task<SecureSession> GetOrCreateSessionAsync(Node node, CancellationToken cancellationToken)
     {
         // Proactively evict sessions older than the TTL before the Matter device
@@ -1289,8 +1309,24 @@ public class TapoService : ITapoService
                 return cachedSession;
             }
 
-            _logger.LogInformation($"[Tapo] Session TTL expired for Node {node.ID}. Refreshing session proactively...");
-            InvalidateSession(node.ID);
+            // TTL expired — the Controller's shared transport is likely stale.
+            // A full reset rebuilds the controller with fresh sockets.
+            _logger.LogInformation($"[Tapo] Session TTL expired for Node {node.ID}. Resetting controller for fresh transport...");
+            ResetController();
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Re-acquire controller and re-enumerate after reset
+            var freshController = GetController();
+            await EnsureFabricEnumeratedAsync(freshController, cancellationToken);
+            var freshNode = freshController.GetNode(node.ID);
+            if (freshNode == null)
+                throw new InvalidOperationException($"Node {node.ID} not found after controller reset.");
+
+            _logger.LogInformation($"[Tapo] Establishing Secure CASE session with Node {freshNode.ID} (Post-Reset)...");
+            var freshSession = await freshNode.GetCASESession();
+            _sessionCache[freshNode.ID] = freshSession;
+            _sessionTimestamps[freshNode.ID] = DateTime.UtcNow;
+            return freshSession;
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -1303,21 +1339,13 @@ public class TapoService : ITapoService
 
     private void InvalidateSession(ulong nodeId)
     {
+        // Only remove from cache — do NOT dispose the connection socket here.
+        // The MRPConnection is shared by the Controller; disposing it kills
+        // the transport for all future operations. Socket disposal only
+        // happens in ResetController() / DisposeSessionSockets().
         _sessionTimestamps.TryRemove(nodeId, out _);
-        if (_sessionCache.TryRemove(nodeId, out var session))
+        if (_sessionCache.TryRemove(nodeId, out _))
         {
-            try
-            {
-                var connProp = session.GetType()
-                    .GetProperty("Connection", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
-                    ?? session.GetType().BaseType?
-                        .GetProperty("Connection", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                var conn = connProp?.GetValue(session);
-                if (conn is IDisposable disposableConn)
-                    disposableConn.Dispose();
-                session.Dispose();
-            }
-            catch { }
             _logger.LogInformation($"[Tapo] Invalidated secure session cache for Node {nodeId}.");
         }
     }
@@ -1329,7 +1357,7 @@ public class TapoService : ITapoService
         {
             return await ListNodesInternalAsync(cancellationToken);
         }
-        catch (Exception ex) when (ex.Message.Contains("An invalid argument was supplied", StringComparison.OrdinalIgnoreCase) || ex is SocketException)
+        catch (Exception ex) when (IsTransportError(ex))
         {
             _logger.LogWarning($"[Tapo] Socket error detected in ListNodesAsync ({ex.Message}). Resetting controller and retrying...");
             ResetController();
@@ -1449,7 +1477,7 @@ public class TapoService : ITapoService
         {
             return await ControlOutletInternalAsync(nodeId, endpointId, turnOn, toggle, cancellationToken);
         }
-        catch (Exception ex) when (ex.Message.Contains("An invalid argument was supplied", StringComparison.OrdinalIgnoreCase) || ex is SocketException)
+        catch (Exception ex) when (IsTransportError(ex))
         {
             _logger.LogWarning($"[Tapo] Socket error detected in ControlOutletAsync ({ex.Message}). Resetting controller and retrying...");
             ResetController();
