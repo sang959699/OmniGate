@@ -1190,15 +1190,14 @@ public class TapoService : ITapoService
     {
         lock (_controllerLock)
         {
-            _logger.LogWarning("[Tapo] Resetting Matter controller and clearing session cache...");
-            // MatterDotNet reuses its MRP UDP transport across controller instances.
-            // Disposing it via reflection leaves every subsequently loaded controller
-            // with a disposed UdpClient, as seen after the session TTL elapsed.
+            _logger.LogWarning("[Tapo] Clearing Matter secure-session cache while retaining the controller transport...");
+            // MatterDotNet shares its MRP UDP transport and protocol state across
+            // controllers. Re-loading the fabric after a session timeout causes
+            // EnumerateFabric to immediately fail on that stale transport. Nodes
+            // are already known, so retain the controller and create a fresh CASE
+            // session directly on the next command instead.
             _sessionCache.Clear();
             _sessionTimestamps.Clear();
-            _fabricEnumerated = false;
-            _controller = null;
-            InitializeController();
         }
     }
 
@@ -1261,7 +1260,7 @@ public class TapoService : ITapoService
     {
         if (!HasExpiredSession()) return;
 
-        _logger.LogInformation("[Tapo] A cached session reached its TTL. Resetting controller before this operation...");
+        _logger.LogInformation("[Tapo] A cached session reached its TTL. Clearing the secure-session cache before this operation...");
         ResetController();
     }
 
