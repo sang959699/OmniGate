@@ -17,6 +17,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Configuration;
 using System.Net;
 using System.Net.Sockets;
+using System.Diagnostics;
 using System.Globalization;
 using HarmonyLib;
 
@@ -161,6 +162,10 @@ class Program
                 }
 
                 return Results.Ok(resultList);
+            }
+            catch (TapoRestartingException ex)
+            {
+                return Results.Problem(ex.Message, statusCode: StatusCodes.Status503ServiceUnavailable);
             }
             catch (Exception ex)
             {
@@ -361,6 +366,23 @@ class Program
 
         Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [Server] Starting HTTP REST API Server on {listenUrl}...");
         await app.RunAsync(listenUrl);
+    }
+
+    private static void DumpMatterDotNet()
+    {
+        var asm = typeof(Controller).Assembly;
+        Console.WriteLine("\n=== ALL STATIC FIELDS IN MatterDotNet ===");
+        foreach (var type in asm.GetTypes())
+        {
+            var staticFields = type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+            foreach (var f in staticFields)
+            {
+                if (!f.IsLiteral && !f.IsInitOnly) // Non-const, writable static fields
+                {
+                    Console.WriteLine($"   {type.FullName}.{f.Name} ({f.FieldType.Name})");
+                }
+            }
+        }
     }
 }
 
@@ -1114,6 +1136,10 @@ public interface ITapoService
 
 public record TapoNodeDto(ulong NodeId, string ConnectionRoot, List<TapoEndpointDto> Endpoints);
 public record TapoEndpointDto(ushort EndpointId, List<string> Types, string State);
+public sealed class TapoRestartingException : Exception
+{
+    public TapoRestartingException(string message, Exception innerException) : base(message, innerException) { }
+}
 
 public class TapoService : ITapoService
 {
@@ -1132,6 +1158,7 @@ public class TapoService : ITapoService
     private readonly ConcurrentDictionary<ulong, SecureSession> _sessionCache = new();
     private readonly ConcurrentDictionary<ulong, DateTime> _sessionTimestamps = new();
     private readonly SemaphoreSlim _operationLock = new SemaphoreSlim(1, 1);
+    private int _restartScheduled;
 
     // Sessions are evicted proactively before the ~1hr Matter session expiry
     private static readonly TimeSpan SessionTtl = TimeSpan.FromMinutes(45);
@@ -1190,14 +1217,100 @@ public class TapoService : ITapoService
     {
         lock (_controllerLock)
         {
-            _logger.LogWarning("[Tapo] Clearing Matter secure-session cache while retaining the controller transport...");
-            // MatterDotNet shares its MRP UDP transport and protocol state across
-            // controllers. Re-loading the fabric after a session timeout causes
-            // EnumerateFabric to immediately fail on that stale transport. Nodes
-            // are already known, so retain the controller and create a fresh CASE
-            // session directly on the next command instead.
+            _logger.LogWarning("[Tapo] Resetting Matter controller and clearing transport sockets...");
             _sessionCache.Clear();
             _sessionTimestamps.Clear();
+            _fabricEnumerated = false;
+
+            try
+            {
+                var smType = typeof(Controller).Assembly.GetType("MatterDotNet.Protocol.Sessions.SessionManager");
+                if (smType != null)
+                {
+                    var connField = smType.GetField("connections", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                    if (connField?.GetValue(null) is System.Collections.IDictionary connDict)
+                    {
+                        foreach (System.Collections.DictionaryEntry entry in connDict)
+                        {
+                            if (entry.Value is IDisposable disp)
+                            {
+                                try { disp.Dispose(); } catch { }
+                            }
+                        }
+                        connDict.Clear();
+                    }
+
+                    var sessField = smType.GetField("sessions", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                    if (sessField?.GetValue(null) is System.Collections.IDictionary sessDict)
+                    {
+                        foreach (System.Collections.DictionaryEntry entry in sessDict)
+                        {
+                            if (entry.Value is System.Collections.IDictionary innerDict)
+                            {
+                                foreach (System.Collections.DictionaryEntry innerEntry in innerDict)
+                                {
+                                    if (innerEntry.Value is IDisposable disp)
+                                    {
+                                        try { disp.Dispose(); } catch { }
+                                    }
+                                }
+                                innerDict.Clear();
+                            }
+                        }
+                        sessDict.Clear();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning($"[Tapo] Warning while purging MatterDotNet SessionManager: {ex.Message}");
+            }
+
+            try
+            {
+                InitializeController();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"[Tapo] Re-initializing controller failed: {ex.Message}");
+            }
+        }
+    }
+
+    private void ScheduleApplicationRestart(Exception failure)
+    {
+        if (Interlocked.Exchange(ref _restartScheduled, 1) != 0) return;
+
+        var executablePath = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(executablePath) || !executablePath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogCritical(failure, "[Tapo] MatterDotNet transport is unrecoverable. Restart OmniGate manually; automatic restart is only supported from the published .exe.");
+            return;
+        }
+
+        try
+        {
+            var workingDirectory = Path.GetDirectoryName(executablePath)!;
+            var command = $"timeout /t 2 /nobreak >nul & start \"\" /D \"{workingDirectory}\" \"{executablePath}\"";
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe",
+                Arguments = $"/d /c {command}",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden
+            });
+
+            _logger.LogCritical(failure, "[Tapo] MatterDotNet transport is unrecoverable after retry. OmniGate will restart in two seconds.");
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(500));
+                Environment.Exit(0);
+            });
+        }
+        catch (Exception restartEx)
+        {
+            _logger.LogCritical(restartEx, "[Tapo] Could not schedule automatic restart after an unrecoverable MatterDotNet transport failure.");
         }
     }
 
@@ -1295,18 +1408,15 @@ public class TapoService : ITapoService
     /// </summary>
     private static bool IsTransportError(Exception ex)
     {
-        if (ex is SocketException) return true;
-        if (ex is ObjectDisposedException) return true;
-        if (ex is IOException) return true;
-        if (ex is TimeoutException) return true;
+        if (ex is SocketException || ex is ObjectDisposedException || ex is IOException || ex is TimeoutException)
+            return true;
 
-        var msg = ex.Message;
-        if (msg.Contains("An invalid argument was supplied", StringComparison.OrdinalIgnoreCase)) return true;
-        if (msg.Contains("disposed object", StringComparison.OrdinalIgnoreCase)) return true;
-        if (msg.Contains("UdpClient", StringComparison.OrdinalIgnoreCase)) return true;
-
-        // Also check inner exceptions
-        if (ex.InnerException != null) return IsTransportError(ex.InnerException);
+        string full = ex.ToString();
+        if (full.Contains("SocketException", StringComparison.OrdinalIgnoreCase)) return true;
+        if (full.Contains("An invalid argument was supplied", StringComparison.OrdinalIgnoreCase)) return true;
+        if (full.Contains("disposed object", StringComparison.OrdinalIgnoreCase)) return true;
+        if (full.Contains("UdpClient", StringComparison.OrdinalIgnoreCase)) return true;
+        if (full.Contains("System.Net.Sockets", StringComparison.OrdinalIgnoreCase)) return true;
 
         return false;
     }
@@ -1374,7 +1484,15 @@ public class TapoService : ITapoService
             _logger.LogWarning($"[Tapo] Socket error detected in ListNodesAsync ({ex.Message}). Resetting controller and retrying...");
             ResetController();
             cancellationToken.ThrowIfCancellationRequested();
-            return await ListNodesInternalAsync(cancellationToken);
+            try
+            {
+                return await ListNodesInternalAsync(cancellationToken);
+            }
+            catch (Exception retryEx) when (IsTransportError(retryEx))
+            {
+                ScheduleApplicationRestart(retryEx);
+                throw new TapoRestartingException("Matter transport could not recover and OmniGate is restarting.", retryEx);
+            }
         }
         catch (OperationCanceledException)
         {
@@ -1508,7 +1626,15 @@ public class TapoService : ITapoService
             _logger.LogWarning($"[Tapo] Socket error detected in ControlOutletAsync ({ex.Message}). Resetting controller and retrying...");
             ResetController();
             cancellationToken.ThrowIfCancellationRequested();
-            return await ControlOutletInternalAsync(nodeId, endpointId, turnOn, toggle, cancellationToken);
+            try
+            {
+                return await ControlOutletInternalAsync(nodeId, endpointId, turnOn, toggle, cancellationToken);
+            }
+            catch (Exception retryEx) when (IsTransportError(retryEx))
+            {
+                ScheduleApplicationRestart(retryEx);
+                throw new TapoRestartingException("Matter transport could not recover and OmniGate is restarting.", retryEx);
+            }
         }
         catch (OperationCanceledException)
         {
