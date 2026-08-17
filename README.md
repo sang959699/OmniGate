@@ -64,7 +64,7 @@ Create an `appsettings.local.json` file in the root directory:
 | `Tapo` | `FabricFile` | `fabric.bin` | Matter fabric state file path |
 | `Tapo` | `KeyFile` | `fabric.key` | Matter private key file path |
 | `Tapo` | `SafetyLockEndpoint` | `4` | Endpoint ID protected by safety lock |
-| `Tapo` | `KeepAliveMinutes` | `15` | Background state-read interval that keeps the Matter CASE session warm |
+| `Tapo` | `KeepAliveMinutes` | `30` | Background state-read interval that keeps the Matter CASE session warm |
 | `WakeOnLan` | `TargetMacAddress` | `00:00:00:00:00:00` | MAC address of the PC to wake |
 | `WakeOnLan` | `BroadcastIP` | `255.255.255.255` | Subnet broadcast IP (e.g. `192.168.1.255`) |
 | `WakeOnLan` | `Port` | `9` | UDP port for magic packet |
