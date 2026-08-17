@@ -103,6 +103,8 @@ class Program
 
         // Start SwitchBot Queue Loop
         switchBotService.StartQueueProcessor();
+        tapoService.StartSessionKeeper();
+        app.Lifetime.ApplicationStopping.Register(tapoService.StopSessionKeeper);
 
         // ------------------ API ENDPOINTS ------------------
 
@@ -1128,6 +1130,8 @@ public class SwitchBotService : ISwitchBotService
 // ------------------ TAPO (MATTER) SERVICE ------------------
 public interface ITapoService
 {
+    void StartSessionKeeper();
+    void StopSessionKeeper();
     Task<List<TapoNodeDto>> ListNodesAsync(CancellationToken cancellationToken = default);
     Task<bool> ControlOutletAsync(ulong nodeId, ushort endpointId, bool turnOn, bool toggle, CancellationToken cancellationToken = default);
     Task<CommissionResult> CommissionNodeAsync(string setupCode, string? wifiSsid, string? wifiPassword);
@@ -1159,9 +1163,12 @@ public class TapoService : ITapoService
     private readonly ConcurrentDictionary<ulong, DateTime> _sessionTimestamps = new();
     private readonly SemaphoreSlim _operationLock = new SemaphoreSlim(1, 1);
     private int _restartScheduled;
+    private readonly CancellationTokenSource _sessionKeeperCancellation = new();
+    private int _sessionKeeperStarted;
 
     // Sessions are evicted proactively before the ~1hr Matter session expiry
     private static readonly TimeSpan SessionTtl = TimeSpan.FromMinutes(45);
+    private readonly TimeSpan _sessionKeepAliveInterval;
     // MatterDotNet does not expose cancellation tokens for its network calls.
     // Bound normal operations so a lost device cannot hold the singleton lock forever.
     private static readonly TimeSpan MatterOperationTimeout = TimeSpan.FromSeconds(20);
@@ -1173,6 +1180,9 @@ public class TapoService : ITapoService
 
         _fabricFile = _config["Tapo:FabricFile"] ?? "fabric.bin";
         _keyFile = _config["Tapo:KeyFile"] ?? "fabric.key";
+        _sessionKeepAliveInterval = int.TryParse(_config["Tapo:KeepAliveMinutes"], out var keepAliveMinutes) && keepAliveMinutes >= 5
+            ? TimeSpan.FromMinutes(keepAliveMinutes)
+            : TimeSpan.FromMinutes(15);
         
         // Safety lock config defaults to Endpoint 4
         if (ushort.TryParse(_config["Tapo:SafetyLockEndpoint"], out ushort ep))
@@ -1185,6 +1195,53 @@ public class TapoService : ITapoService
         }
 
         InitializeController();
+    }
+
+    public void StartSessionKeeper()
+    {
+        if (Interlocked.Exchange(ref _sessionKeeperStarted, 1) != 0) return;
+
+        _ = Task.Run(SessionKeeperLoopAsync);
+        _logger.LogInformation("[Tapo] Session keeper enabled; pre-warming now and then every {Interval} minutes.", _sessionKeepAliveInterval.TotalMinutes);
+    }
+
+    public void StopSessionKeeper()
+    {
+        _sessionKeeperCancellation.Cancel();
+    }
+
+    private async Task SessionKeeperLoopAsync()
+    {
+        var cancellationToken = _sessionKeeperCancellation.Token;
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    var nodes = await ListNodesAsync(cancellationToken);
+                    _logger.LogDebug("[Tapo] Session keeper refreshed {NodeCount} node(s).", nodes.Count);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (TapoRestartingException)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "[Tapo] Session keeper failed; the next interval will retry.");
+                }
+
+                await Task.Delay(_sessionKeepAliveInterval, cancellationToken);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Normal application shutdown.
+        }
     }
 
     private void InitializeController()
@@ -1362,6 +1419,14 @@ public class TapoService : ITapoService
             return DateTime.UtcNow - created > SessionTtl;
         }
         return false;
+    }
+
+    private void MarkSessionUsed(ulong nodeId)
+    {
+        if (_sessionCache.ContainsKey(nodeId))
+        {
+            _sessionTimestamps[nodeId] = DateTime.UtcNow;
+        }
     }
 
     private bool HasExpiredSession()
@@ -1581,6 +1646,7 @@ public class TapoService : ITapoService
                         var onOff = new On_Off(epIdx);
                         var stateVal = await AwaitMatterAsync(onOff.GetOnOff(session), $"state read for Node {node.ID}, Endpoint {epIdx}");
                         stateStr = stateVal ? "ON" : "OFF";
+                        MarkSessionUsed(node.ID);
                     }
                     catch (OperationCanceledException)
                     {
@@ -1663,7 +1729,9 @@ public class TapoService : ITapoService
             operation = onOff.Off(session);
         }
 
-        return await AwaitMatterAsync(operation, $"command for Node {nodeId}, Endpoint {endpointId}");
+        var success = await AwaitMatterAsync(operation, $"command for Node {nodeId}, Endpoint {endpointId}");
+        MarkSessionUsed(nodeId);
+        return success;
     }
 
     private async Task<bool> ControlOutletInternalAsync(ulong nodeId, ushort endpointId, bool turnOn, bool toggle, CancellationToken cancellationToken)
