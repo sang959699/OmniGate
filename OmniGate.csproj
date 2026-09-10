@@ -13,4 +13,25 @@
     <PackageReference Include="MatterDotNet" Version="0.5.0" />
   </ItemGroup>
 
+  <!-- Matter fabric state is local/ignored, but must travel with a published app. -->
+  <ItemGroup>
+    <None Update="fabric.bin"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
+    <None Update="fabric.key"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
+
+    <!-- These files belong to the machine running OmniGate, not the release package. -->
+    <Content Update="names.json"
+             CopyToOutputDirectory="Never"
+             CopyToPublishDirectory="Never" />
+    <Content Update="hidden.json"
+             CopyToOutputDirectory="Never"
+             CopyToPublishDirectory="Never" />
+    <Content Update="appsettings.local.json"
+             CopyToOutputDirectory="Never"
+             CopyToPublishDirectory="Never" />
+  </ItemGroup>
+
 </Project>

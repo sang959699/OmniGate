@@ -68,7 +68,7 @@ document.addEventListener("DOMContentLoaded", () => {
             
             if (!response.ok) {
                 const data = await response.json().catch(() => ({}));
-                throw new Error(data.error || `Server returned status ${response.status}`);
+                throw new Error(data.error || data.detail || data.title || `Server returned status ${response.status}`);
             }
             
             return await response.json().catch(() => ({ success: true }));

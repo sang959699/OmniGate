@@ -13,8 +13,8 @@ Designed for low latency and high stability, OmniGate features sub-50ms executio
 * **🛡️ Hardware Serialization Lock & Cancel Protection**: Integrates a sequential hardware semaphore lock and propagates ASP.NET Core `CancellationToken` signals. If you refresh the dashboard or spam commands, old requests are immediately evicted from the queues, preventing the Tapo strip from returning `BUSY` or getting stuck.
 * **📱 Premium Mobile-Responsive Dashboard**: A modern, glassmorphic dark-theme Web UI. Collapses setting panels (BLE Radar, Matter Provisioning Wizard, Wake on LAN, iOS Shortcut Integration assistant) and reflows tables into cards on screens under 768px.
 * **🔗 iOS Shortcuts Integration**: Custom assistant that generates ready-to-use Siri Shortcuts (POST webhooks) to toggle or trigger your outlets, switches, and Wake on LAN hands-free.
-* **🏷️ Persistent Custom Names**: Save custom labels for individual outlets (stored locally in `names.json` and kept out of Git).
-* **👁️ Outlet Hiding**: Hide outlets from the dashboard for a cleaner view. Hidden state is persisted server-side in `hidden.json` and shared across all frontends. Technical metadata (Node IDs, endpoint types) is only shown when the Hidden toggle is active.
+* **🏷️ Persistent Custom Names**: Save custom labels for individual outlets (stored in the configured local state directory and kept out of Git).
+* **👁️ Outlet Hiding**: Hide outlets from the dashboard for a cleaner view. Hidden state is persisted server-side and shared across all frontends. Technical metadata (Node IDs, endpoint types) is only shown when the Hidden toggle is active.
 * **💻 Wake on LAN (WOL)**: Send UDP magic packets to wake a desktop PC on the local network. Configurable target MAC, broadcast IP, and port. Works from the dashboard UI, REST API, or iOS Shortcuts.
 * **🩹 Self-Healing Socket & Session Recovery**: Monitors UDP network socket status and automatically recovers from long-running socket corruption (e.g. after 24+ hours of inactivity, DHCP renewals, or sleep mode wakeups). On socket failures (`SocketException` or `"An invalid argument was supplied"`), OmniGate disposes of the stale Matter controller, clears the cache, binds to a fresh socket, and transparently auto-retries the command without dropping requests.
 
@@ -44,6 +44,9 @@ Create an `appsettings.local.json` file in the root directory:
 
 ```json
 {
+  "Storage": {
+    "Directory": "D:\\OmniGateData"
+  },
   "SwitchBot": {
     "MacAddress": "YOUR:SWITCHBOT:MAC:ADDRESS"
   },
@@ -61,10 +64,14 @@ Create an `appsettings.local.json` file in the root directory:
 | `SwitchBot` | `MacAddress` | `00:00:00:00:00:00` | BLE MAC address of your SwitchBot Bot |
 | `SwitchBot` | `ListenUrl` | `http://0.0.0.0:5000` | HTTP server bind address |
 | `SwitchBot` | `EnableBackgroundWatcher` | `false` | Passive BLE scanning to warm connection cache |
+| `Storage` | `Directory` | empty | Optional persistent data directory outside the release folder; stores names, hidden state, and Matter fabric files |
+| `Storage` | `NamesFile` | `names.json` | Optional custom path for outlet names; relative paths use `Storage:Directory` |
+| `Storage` | `HiddenFile` | `hidden.json` | Optional custom path for hidden outlet state; relative paths use `Storage:Directory` |
 | `Tapo` | `FabricFile` | `fabric.bin` | Matter fabric state file path |
 | `Tapo` | `KeyFile` | `fabric.key` | Matter private key file path |
 | `Tapo` | `SafetyLockEndpoint` | `4` | Endpoint ID protected by safety lock |
 | `Tapo` | `KeepAliveMinutes` | `30` | Background state-read interval that keeps the Matter CASE session warm |
+| `Tapo` | `CommissioningTimeoutSeconds` | `120` | Maximum time allowed for initial Matter/Wi-Fi commissioning |
 | `WakeOnLan` | `TargetMacAddress` | `00:00:00:00:00:00` | MAC address of the PC to wake |
 | `WakeOnLan` | `BroadcastIP` | `255.255.255.255` | Subnet broadcast IP (e.g. `192.168.1.255`) |
 | `WakeOnLan` | `Port` | `9` | UDP port for magic packet |
@@ -78,6 +85,20 @@ OmniGate.exe
 ```
 The server will start listening on `http://localhost:5000` (or the IP configured under `ListenUrl`). Open this address in any browser to access the dashboard.
 
+The local Matter fabric files (`fabric.bin` and `fabric.key`) are copied into the release folder when they exist, but remain ignored by Git. Keep both files together: they contain the fabric identity used by all commissioned Tapo devices. The dashboard's **Matter Provisioning Wizard** adds a new Matter-capable Tapo to that existing fabric.
+
+For a server deployment, keep runtime state outside the release folder so replacing the application files cannot overwrite it. Add this to the server's `appsettings.local.json` (do not commit it):
+
+```json
+{
+  "Storage": {
+    "Directory": "D:\\OmniGateData"
+  }
+}
+```
+
+Create that folder before the first deployment. On first startup, OmniGate migrates an existing `names.json`, `hidden.json`, `fabric.bin`, and `fabric.key` from the application folder when the corresponding external file does not already exist. Later deployments use the external copies and leave them untouched. Back up the folder before deploying or commissioning another Tapo.
+
 ---
 
 ## 📡 REST API Reference
@@ -86,6 +107,7 @@ OmniGate exposes a simple REST API that makes it easy to integrate with iOS Shor
 
 ### Tapo Power Strip (Matter)
 * **`GET /api/tapo/list`**: Returns a list of discovered Tapo strips, their outlets, current ON/OFF states, and custom labels.
+* **`POST /api/tapo/commission`**: Commissions a Matter-capable Tapo using `{ "setupCode": "...", "wifiSsid": "...", "wifiPassword": "..." }`. The setup code may be a Matter PIN or an `MT:` QR payload.
 * **`POST /api/tapo/{nodeId}/{endpointId}/on`**: Turns a specific outlet ON.
 * **`POST /api/tapo/{nodeId}/{endpointId}/off`**: Turns a specific outlet OFF.
 * **`POST /api/tapo/{nodeId}/{endpointId}/toggle`**: Toggles the outlet state.

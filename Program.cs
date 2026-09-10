@@ -312,7 +312,7 @@ class Program
                 if (result.Success)
                     return Results.Ok(result);
                 
-                return Results.Problem(result.Message);
+                return Results.BadRequest(new { error = result.Message });
             }
             catch (Exception ex)
             {
@@ -395,6 +395,54 @@ public record CommissionRequest(string SetupCode, string? WifiSsid = null, strin
 public record CommissionResult(bool Success, string Message, string? ConfiguredSSID = null);
 public record WakeRequest(string? MacAddress = null, string? BroadcastIp = null, int? Port = null);
 
+// ------------------ LOCAL STATE PATHS ------------------
+// Runtime state can be kept outside the deployed application directory. This
+// prevents a release-folder replacement from overwriting device names, hidden
+// outlet state, or the Matter fabric.
+public static class LocalStatePath
+{
+    public static string Resolve(IConfiguration config, string settingKey, string defaultFileName)
+    {
+        string path = config[settingKey] ?? defaultFileName;
+        string? storageDirectory = config["Storage:Directory"];
+
+        if (!Path.IsPathRooted(path) && !string.IsNullOrWhiteSpace(storageDirectory))
+        {
+            path = Path.Combine(storageDirectory, path);
+        }
+
+        path = Path.GetFullPath(path);
+        string? directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        return path;
+    }
+
+    public static void MigrateLegacyIfMissing(string path, string legacyFileName)
+    {
+        string legacyPath = Path.GetFullPath(legacyFileName);
+        if (string.Equals(path, legacyPath, StringComparison.OrdinalIgnoreCase) ||
+            File.Exists(path) ||
+            !File.Exists(legacyPath))
+        {
+            return;
+        }
+
+        try
+        {
+            File.Copy(legacyPath, path);
+            Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [Storage] Migrated {legacyFileName} to {path}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [Storage] Failed to migrate {legacyFileName}: {ex.Message}");
+        }
+    }
+}
+
 // ------------------ HIDDEN SERVICE ------------------
 public interface IHiddenService
 {
@@ -405,12 +453,14 @@ public interface IHiddenService
 
 public class HiddenService : IHiddenService
 {
-    private const string HiddenFile = "hidden.json";
+    private readonly string _hiddenFile;
     private readonly ConcurrentDictionary<string, bool> _hidden = new();
     private readonly object _fileLock = new();
 
-    public HiddenService()
+    public HiddenService(IConfiguration config)
     {
+        _hiddenFile = LocalStatePath.Resolve(config, "Storage:HiddenFile", "hidden.json");
+        LocalStatePath.MigrateLegacyIfMissing(_hiddenFile, "hidden.json");
         LoadHidden();
     }
 
@@ -420,9 +470,9 @@ public class HiddenService : IHiddenService
         {
             try
             {
-                if (File.Exists(HiddenFile))
+                if (File.Exists(_hiddenFile))
                 {
-                    string json = File.ReadAllText(HiddenFile);
+                    string json = File.ReadAllText(_hiddenFile);
                     var list = JsonSerializer.Deserialize<List<string>>(json);
                     if (list != null)
                     {
@@ -435,7 +485,7 @@ public class HiddenService : IHiddenService
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [Hidden] Failed to load hidden.json: {ex.Message}");
+                Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [Hidden] Failed to load {_hiddenFile}: {ex.Message}");
             }
         }
     }
@@ -448,11 +498,11 @@ public class HiddenService : IHiddenService
             {
                 var list = _hidden.Where(kvp => kvp.Value).Select(kvp => kvp.Key).ToList();
                 string json = JsonSerializer.Serialize(list, new JsonSerializerOptions { WriteIndented = true });
-                File.WriteAllText(HiddenFile, json);
+                File.WriteAllText(_hiddenFile, json);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [Hidden] Failed to save hidden.json: {ex.Message}");
+                Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [Hidden] Failed to save {_hiddenFile}: {ex.Message}");
             }
         }
     }
@@ -543,12 +593,14 @@ public interface INameService
 
 public class NameService : INameService
 {
-    private const string NameFile = "names.json";
+    private readonly string _nameFile;
     private readonly ConcurrentDictionary<string, string> _names = new();
     private readonly object _fileLock = new();
 
-    public NameService()
+    public NameService(IConfiguration config)
     {
+        _nameFile = LocalStatePath.Resolve(config, "Storage:NamesFile", "names.json");
+        LocalStatePath.MigrateLegacyIfMissing(_nameFile, "names.json");
         LoadNames();
     }
 
@@ -558,9 +610,9 @@ public class NameService : INameService
         {
             try
             {
-                if (File.Exists(NameFile))
+                if (File.Exists(_nameFile))
                 {
-                    string json = File.ReadAllText(NameFile);
+                    string json = File.ReadAllText(_nameFile);
                     var dict = JsonSerializer.Deserialize<Dictionary<string, string>>(json);
                     if (dict != null)
                     {
@@ -573,7 +625,7 @@ public class NameService : INameService
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [Names] Failed to load names.json: {ex.Message}");
+                Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [Names] Failed to load {_nameFile}: {ex.Message}");
             }
         }
     }
@@ -585,11 +637,11 @@ public class NameService : INameService
             try
             {
                 string json = JsonSerializer.Serialize(_names, new JsonSerializerOptions { WriteIndented = true });
-                File.WriteAllText(NameFile, json);
+                File.WriteAllText(_nameFile, json);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [Names] Failed to save names.json: {ex.Message}");
+                Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [Names] Failed to save {_nameFile}: {ex.Message}");
             }
         }
     }
@@ -1172,17 +1224,23 @@ public class TapoService : ITapoService
     // MatterDotNet does not expose cancellation tokens for its network calls.
     // Bound normal operations so a lost device cannot hold the singleton lock forever.
     private static readonly TimeSpan MatterOperationTimeout = TimeSpan.FromSeconds(20);
+    private readonly TimeSpan _commissioningTimeout;
 
     public TapoService(IConfiguration config, ILogger<TapoService> logger)
     {
         _config = config;
         _logger = logger;
 
-        _fabricFile = _config["Tapo:FabricFile"] ?? "fabric.bin";
-        _keyFile = _config["Tapo:KeyFile"] ?? "fabric.key";
+        _fabricFile = LocalStatePath.Resolve(_config, "Tapo:FabricFile", "fabric.bin");
+        _keyFile = LocalStatePath.Resolve(_config, "Tapo:KeyFile", "fabric.key");
+        LocalStatePath.MigrateLegacyIfMissing(_fabricFile, "fabric.bin");
+        LocalStatePath.MigrateLegacyIfMissing(_keyFile, "fabric.key");
         _sessionKeepAliveInterval = int.TryParse(_config["Tapo:KeepAliveMinutes"], out var keepAliveMinutes) && keepAliveMinutes >= 5
             ? TimeSpan.FromMinutes(keepAliveMinutes)
             : TimeSpan.FromMinutes(15);
+        _commissioningTimeout = int.TryParse(_config["Tapo:CommissioningTimeoutSeconds"], out var commissioningSeconds) && commissioningSeconds >= 30
+            ? TimeSpan.FromSeconds(commissioningSeconds)
+            : TimeSpan.FromMinutes(2);
         
         // Safety lock config defaults to Endpoint 4
         if (ushort.TryParse(_config["Tapo:SafetyLockEndpoint"], out ushort ep))
@@ -1442,17 +1500,18 @@ public class TapoService : ITapoService
         ResetController();
     }
 
-    private async Task<T> AwaitMatterAsync<T>(Task<T> operation, string description)
+    private async Task<T> AwaitMatterAsync<T>(Task<T> operation, string description, TimeSpan? timeout = null)
     {
-        await AwaitMatterAsync((Task)operation, description);
+        await AwaitMatterAsync((Task)operation, description, timeout);
         return await operation;
     }
 
-    private async Task AwaitMatterAsync(Task operation, string description)
+    private async Task AwaitMatterAsync(Task operation, string description, TimeSpan? timeout = null)
     {
+        var effectiveTimeout = timeout ?? MatterOperationTimeout;
         try
         {
-            await operation.WaitAsync(MatterOperationTimeout);
+            await operation.WaitAsync(effectiveTimeout);
         }
         catch (TimeoutException ex)
         {
@@ -1463,7 +1522,7 @@ public class TapoService : ITapoService
                 CancellationToken.None,
                 TaskContinuationOptions.OnlyOnFaulted,
                 TaskScheduler.Default);
-            throw new TimeoutException($"Matter {description} timed out after {MatterOperationTimeout.TotalSeconds:0} seconds.", ex);
+            throw new TimeoutException($"Matter {description} timed out after {effectiveTimeout.TotalSeconds:0} seconds.", ex);
         }
     }
 
@@ -1834,10 +1893,27 @@ public class TapoService : ITapoService
 
         _logger.LogInformation($"[Tapo] Starting Commissioning for Vendor: {payload.VendorID}, Product: {payload.ProductID}...");
         
-        CommissioningState state = await AwaitMatterAsync(controller.StartCommissioning(payload, "", VerificationLevel.AnyDevice), "commissioning start");
+        _logger.LogInformation("[Tapo] Commissioning may take up to {TimeoutSeconds} seconds while the device scans and establishes its operational session.", _commissioningTimeout.TotalSeconds);
+        CommissioningState state = await AwaitMatterAsync(controller.StartCommissioning(payload, "", VerificationLevel.AnyDevice), "commissioning start", _commissioningTimeout);
         _logger.LogInformation("[Tapo] Operational Discovery handshake complete.");
 
-        if (state.WiFiNetworks != null && state.WiFiNetworks.Length > 0)
+        var connectedNetworks = state.ConnectedNetworks?
+            .Where(network => !string.IsNullOrWhiteSpace(network))
+            .ToArray() ?? Array.Empty<string>();
+
+        if (connectedNetworks.Length > 0)
+        {
+            _logger.LogInformation("[Tapo] Device is already connected to operational network(s): {Networks}. Completing without WiFi provisioning.", string.Join(", ", connectedNetworks));
+            await AwaitMatterAsync(controller.CompleteCommissioning(state), "commissioning completion", _commissioningTimeout);
+
+            controller.Save(_fabricFile, _keyFile);
+            // Reload from disk before the next enumeration. MatterDotNet's
+            // EnumerateFabric method does not clear its in-memory node table,
+            // so reusing this controller would duplicate existing nodes.
+            ResetController();
+            return new CommissionResult(true, "Commissioning complete. Existing WiFi connection preserved.", connectedNetworks[0]);
+        }
+        else if (state.WiFiNetworks != null && state.WiFiNetworks.Length > 0)
         {
             _logger.LogInformation("[Tapo] WiFi provisioning required on device.");
             
@@ -1853,28 +1929,48 @@ public class TapoService : ITapoService
 
                 string ssidStr = Encoding.UTF8.GetString(targetWifi.SSID);
                 _logger.LogInformation($"[Tapo] Provisioning credentials to WiFi: {ssidStr}");
-                await AwaitMatterAsync(controller.CompleteCommissioning(state, targetWifi, wifiPassword ?? ""), "commissioning completion");
+                await AwaitMatterAsync(controller.CompleteCommissioning(state, targetWifi, wifiPassword ?? ""), "commissioning completion", _commissioningTimeout);
                 
                 controller.Save(_fabricFile, _keyFile);
-                _fabricEnumerated = false;
+                ResetController();
                 return new CommissionResult(true, "Commissioning complete with WiFi configuration.", ssidStr);
             }
             else
             {
-                // Wi-Fi was needed but credentials were not supplied in the API call. Return list of scanned networks.
-                WipeCommissioningProgress(controller, state);
+                // Some vendor apps configure Wi-Fi successfully but the device does not
+                // report that network through Matter's ConnectedNetworks attribute.
+                // MatterDotNet's network-only completion path requires at least one
+                // connected-network marker, so try the operational discovery path first.
+                _logger.LogInformation("[Tapo] No Matter connected network was reported. Trying to complete over the existing operational network before requesting WiFi credentials.");
+                try
+                {
+                    MarkExistingNetworkForCompletion(state);
+                    await AwaitMatterAsync(controller.CompleteCommissioning(state), "commissioning completion on existing network", _commissioningTimeout);
+
+                    controller.Save(_fabricFile, _keyFile);
+                    ResetController();
+                    return new CommissionResult(true, "Commissioning complete. Existing WiFi connection preserved.", null);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogInformation("[Tapo] Existing-network completion was not available: {Message}", ex.Message);
+                    WipeCommissioningProgress(controller, state);
+                }
+
+                // The device could not be completed over its existing network. Return
+                // the scan results so the caller can provide WiFi credentials instead.
                 var ssidsList = state.WiFiNetworks.Select(n => Encoding.UTF8.GetString(n.SSID)).ToList();
                 string ssidsCsv = string.Join(", ", ssidsList);
-                return new CommissionResult(false, $"Device requires WiFi configuration. Available networks: {ssidsCsv}", null);
+                return new CommissionResult(false, $"Device could not be completed over its existing WiFi connection. If it is not reachable on the local network, provide WiFi credentials. Available networks: {ssidsCsv}", null);
             }
         }
         else
         {
-            _logger.LogInformation("[Tapo] Device already on local IP. Completing commissioning...");
-            await AwaitMatterAsync(controller.CompleteCommissioning(state), "commissioning completion");
+            _logger.LogInformation("[Tapo] Device is already reachable on the local operational network. Completing commissioning...");
+            await AwaitMatterAsync(controller.CompleteCommissioning(state), "commissioning completion", _commissioningTimeout);
             
             controller.Save(_fabricFile, _keyFile);
-            _fabricEnumerated = false;
+            ResetController();
             return new CommissionResult(true, "Commissioning complete.", null);
         }
     }
@@ -1905,7 +2001,8 @@ public class TapoService : ITapoService
         await AwaitMatterAsync(controller.RemoveNode(node), $"removal of Node {nodeId}");
         InvalidateSession(nodeId);
         controller.Save(_fabricFile, _keyFile);
-        _fabricEnumerated = false;
+        // Reload so the next enumeration starts with a fresh node table.
+        ResetController();
         return true;
     }
 
@@ -1919,6 +2016,22 @@ public class TapoService : ITapoService
             ResetController();
         }
         catch { }
+    }
+
+    private static void MarkExistingNetworkForCompletion(CommissioningState state)
+    {
+        // MatterDotNet's public completion method requires ConnectedNetworks to
+        // contain an entry, but its Upgrade helper is internal. The device is
+        // already configured by the vendor app; this marker only allows the
+        // library to proceed to operational IP discovery.
+        var property = typeof(CommissioningState).GetProperty(
+            nameof(CommissioningState.ConnectedNetworks),
+            BindingFlags.Public | BindingFlags.Instance);
+        var setter = property?.GetSetMethod(nonPublic: true);
+        if (setter == null)
+            throw new InvalidOperationException("MatterDotNet does not expose a ConnectedNetworks setter.");
+
+        setter.Invoke(state, new object[] { new[] { "Existing operational network" } });
     }
 
     // Helper methods
