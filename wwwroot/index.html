@@ -22,6 +22,20 @@
                 <span class="pulse-indicator status-online" id="server-status-dot"></span>
                 <h1>OmniGate</h1>
             </div>
+            <div class="header-room-stats" aria-label="Room air status">
+                <div class="header-room-stat">
+                    <span class="label">Air quality</span>
+                    <span class="value" id="header-air-quality">--</span>
+                </div>
+                <div class="header-room-stat">
+                    <span class="label">Humidity</span>
+                    <span class="value" id="header-humidity">--</span>
+                </div>
+                <div class="header-room-stat">
+                    <span class="label">Temperature</span>
+                    <span class="value" id="header-temperature">--</span>
+                </div>
+            </div>
             <div class="header-actions" style="margin-left: auto; display: flex; gap: 0.5rem; align-items: center;">
                 <button class="btn btn-secondary btn-sm" id="btn-toggle-routines" style="flex: none;">
                     ⚡ Routines
@@ -219,6 +233,56 @@
                         <div class="status-item"><span class="label">Power</span><span class="value" id="xiaomi-power-state">Unknown</span></div>
                     </div>
                     <div class="status-log-box" id="xiaomi-message">Start the one-time Xiaomi Home sign-in.</div>
+                    <div class="xiaomi-reading-layout">
+                        <div class="xiaomi-reading-group">
+                            <h3>Room readings</h3>
+                            <div class="xiaomi-reading-grid">
+                                <div class="reading-item"><span class="label">Air quality</span><span class="value" id="xiaomi-air-quality">--</span></div>
+                                <div class="reading-item"><span class="label">PM2.5</span><span class="value" id="xiaomi-pm25">--</span></div>
+                                <div class="reading-item"><span class="label">PM10</span><span class="value" id="xiaomi-pm10">--</span></div>
+                                <div class="reading-item"><span class="label">Humidity</span><span class="value" id="xiaomi-humidity">--</span></div>
+                                <div class="reading-item"><span class="label">Temperature</span><span class="value" id="xiaomi-temperature">--</span></div>
+                            </div>
+                        </div>
+                        <div class="xiaomi-reading-group">
+                            <h3>Purifier readings</h3>
+                            <div class="xiaomi-reading-grid">
+                                <div class="reading-item"><span class="label">Mode</span><span class="value" id="xiaomi-mode-state">--</span></div>
+                                <div class="reading-item"><span class="label">Fan level</span><span class="value" id="xiaomi-fan-state">--</span></div>
+                                <div class="reading-item"><span class="label">Plasma</span><span class="value" id="xiaomi-plasma-state">--</span></div>
+                                <div class="reading-item"><span class="label">UV</span><span class="value" id="xiaomi-uv-state">--</span></div>
+                                <div class="reading-item"><span class="label">Fault</span><span class="value" id="xiaomi-fault-state">--</span></div>
+                            </div>
+                        </div>
+                        <div class="xiaomi-reading-group">
+                            <h3>Filter</h3>
+                            <div class="xiaomi-reading-grid">
+                                <div class="reading-item"><span class="label">Remaining life</span><span class="value" id="xiaomi-filter-life">--</span></div>
+                                <div class="reading-item"><span class="label">Used time</span><span class="value" id="xiaomi-filter-hours">--</span></div>
+                            </div>
+                        </div>
+                    </div>
+                    <details class="xiaomi-advanced-readings">
+                        <summary>Advanced diagnostics and filter identity</summary>
+                        <div class="xiaomi-advanced-grid">
+                            <div class="reading-item"><span class="label">Alarm</span><span class="value" id="xiaomi-alarm-state">--</span></div>
+                            <div class="reading-item"><span class="label">Child lock</span><span class="value" id="xiaomi-child-lock-state">--</span></div>
+                            <div class="reading-item"><span class="label">Screen brightness</span><span class="value" id="xiaomi-brightness-state">--</span></div>
+                            <div class="reading-item"><span class="label">Favorite fan level</span><span class="value" id="xiaomi-favorite-level-state">--</span></div>
+                            <div class="reading-item"><span class="label">Temperature unit</span><span class="value" id="xiaomi-temperature-unit-state">--</span></div>
+                            <div class="reading-item"><span class="label">Motor speed</span><span class="value" id="xiaomi-motor-rpm">--</span></div>
+                            <div class="reading-item"><span class="label">Last reboot cause</span><span class="value" id="xiaomi-reboot-cause">--</span></div>
+                            <div class="reading-item"><span class="label">I²C errors</span><span class="value" id="xiaomi-iic-errors">--</span></div>
+                            <div class="reading-item"><span class="label">Country code</span><span class="value" id="xiaomi-country-code">--</span></div>
+                            <div class="reading-item"><span class="label">Favorite area</span><span class="value" id="xiaomi-favorite-square">--</span></div>
+                            <div class="reading-item"><span class="label">AQI sync heartbeat</span><span class="value" id="xiaomi-aqi-heartbeat">--</span></div>
+                            <div class="reading-item"><span class="label">Filter tag</span><span class="value" id="xiaomi-filter-tag">--</span></div>
+                            <div class="reading-item"><span class="label">Filter factory ID</span><span class="value" id="xiaomi-filter-factory">--</span></div>
+                            <div class="reading-item"><span class="label">Filter product ID</span><span class="value" id="xiaomi-filter-product">--</span></div>
+                            <div class="reading-item"><span class="label">Filter manufactured</span><span class="value" id="xiaomi-filter-manufactured">--</span></div>
+                            <div class="reading-item"><span class="label">Filter serial</span><span class="value" id="xiaomi-filter-serial">--</span></div>
+                        </div>
+                    </details>
                     <div class="xiaomi-setup-grid">
                         <div class="xiaomi-login-panel">
                             <h3>One-time Xiaomi Home sign-in</h3>
@@ -231,11 +295,70 @@
                         </div>
                         <div class="xiaomi-local-panel">
                             <h3>Local control</h3>
-                            <p class="description">The test only reads the current power state. Automation remains off until it succeeds.</p>
-                            <button class="btn btn-secondary" id="btn-xiaomi-test">Test LAN connection</button>
+                            <p class="description">All readings and controls use the purifier’s local token. Automation remains off until the LAN test succeeds.</p>
+                            <button class="btn btn-secondary" id="btn-xiaomi-test">Refresh all readings</button>
                             <div class="action-buttons">
                                 <button class="btn btn-primary" id="btn-xiaomi-on" disabled>Turn on</button>
                                 <button class="btn btn-secondary" id="btn-xiaomi-off" disabled>Turn off</button>
+                            </div>
+                            <div class="xiaomi-control-grid">
+                                <label>Mode
+                                    <select id="xiaomi-mode-control" disabled>
+                                        <option value="0">Auto</option>
+                                        <option value="1">Sleep</option>
+                                        <option value="2">Favorite</option>
+                                        <option value="3">Manual</option>
+                                    </select>
+                                </label>
+                                <label>Fan level
+                                    <select id="xiaomi-fan-control" disabled>
+                                        <option value="1">Level 1</option>
+                                        <option value="2">Level 2</option>
+                                        <option value="3">Level 3</option>
+                                    </select>
+                                </label>
+                            </div>
+                            <div class="xiaomi-toggle-grid">
+                                <label><input type="checkbox" id="xiaomi-plasma-control" disabled><span>Plasma</span></label>
+                                <label><input type="checkbox" id="xiaomi-uv-control" disabled><span>UV sterilization</span></label>
+                                <label><input type="checkbox" id="xiaomi-child-lock-control" disabled><span>Child lock</span></label>
+                            </div>
+                            <div class="xiaomi-control-grid xiaomi-advanced-controls">
+                                <label>Screen brightness
+                                    <select id="xiaomi-brightness-control" disabled>
+                                        <option value="0">Off</option>
+                                        <option value="1">Dim</option>
+                                        <option value="2">Normal</option>
+                                    </select>
+                                </label>
+                                <label>Favorite fan level
+                                    <select id="xiaomi-favorite-level-control" disabled>
+                                        <option value="0">Level 0</option>
+                                        <option value="1">Level 1</option>
+                                        <option value="2">Level 2</option>
+                                        <option value="3">Level 3</option>
+                                        <option value="4">Level 4</option>
+                                        <option value="5">Level 5</option>
+                                        <option value="6">Level 6</option>
+                                        <option value="7">Level 7</option>
+                                        <option value="8">Level 8</option>
+                                        <option value="9">Level 9</option>
+                                        <option value="10">Level 10</option>
+                                        <option value="11">Level 11</option>
+                                        <option value="12">Level 12</option>
+                                        <option value="13">Level 13</option>
+                                        <option value="14">Level 14</option>
+                                    </select>
+                                </label>
+                                <label>Temperature display
+                                    <select id="xiaomi-temperature-unit-control" disabled>
+                                        <option value="1">Celsius</option>
+                                        <option value="2">Fahrenheit</option>
+                                    </select>
+                                </label>
+                            </div>
+                            <div class="xiaomi-toggle-grid xiaomi-advanced-controls">
+                                <label><input type="checkbox" id="xiaomi-alarm-control" disabled><span>Alarm</span></label>
                             </div>
                             <label class="xiaomi-automation-toggle">
                                 <input type="checkbox" id="xiaomi-automation" disabled>

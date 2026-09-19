@@ -4,6 +4,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // DOM Elements
     const serverStatusDot = document.getElementById("server-status-dot");
+    const headerAirQuality = document.getElementById("header-air-quality");
+    const headerHumidity = document.getElementById("header-humidity");
+    const headerTemperature = document.getElementById("header-temperature");
     
     // SwitchBot elements
     const switchbotConnBadge = document.getElementById("switchbot-conn-badge");
@@ -48,6 +51,43 @@ document.addEventListener("DOMContentLoaded", () => {
     const btnXiaomiOff = document.getElementById("btn-xiaomi-off");
     const xiaomiAutomation = document.getElementById("xiaomi-automation");
     const xiaomiLastAutomation = document.getElementById("xiaomi-last-automation");
+    const xiaomiAirQuality = document.getElementById("xiaomi-air-quality");
+    const xiaomiPm25 = document.getElementById("xiaomi-pm25");
+    const xiaomiPm10 = document.getElementById("xiaomi-pm10");
+    const xiaomiHumidity = document.getElementById("xiaomi-humidity");
+    const xiaomiTemperature = document.getElementById("xiaomi-temperature");
+    const xiaomiModeState = document.getElementById("xiaomi-mode-state");
+    const xiaomiFanState = document.getElementById("xiaomi-fan-state");
+    const xiaomiPlasmaState = document.getElementById("xiaomi-plasma-state");
+    const xiaomiUvState = document.getElementById("xiaomi-uv-state");
+    const xiaomiFaultState = document.getElementById("xiaomi-fault-state");
+    const xiaomiFilterLife = document.getElementById("xiaomi-filter-life");
+    const xiaomiFilterHours = document.getElementById("xiaomi-filter-hours");
+    const xiaomiAlarmState = document.getElementById("xiaomi-alarm-state");
+    const xiaomiChildLockState = document.getElementById("xiaomi-child-lock-state");
+    const xiaomiBrightnessState = document.getElementById("xiaomi-brightness-state");
+    const xiaomiFavoriteLevelState = document.getElementById("xiaomi-favorite-level-state");
+    const xiaomiTemperatureUnitState = document.getElementById("xiaomi-temperature-unit-state");
+    const xiaomiMotorRpm = document.getElementById("xiaomi-motor-rpm");
+    const xiaomiRebootCause = document.getElementById("xiaomi-reboot-cause");
+    const xiaomiIicErrors = document.getElementById("xiaomi-iic-errors");
+    const xiaomiCountryCode = document.getElementById("xiaomi-country-code");
+    const xiaomiFavoriteSquare = document.getElementById("xiaomi-favorite-square");
+    const xiaomiAqiHeartbeat = document.getElementById("xiaomi-aqi-heartbeat");
+    const xiaomiFilterTag = document.getElementById("xiaomi-filter-tag");
+    const xiaomiFilterFactory = document.getElementById("xiaomi-filter-factory");
+    const xiaomiFilterProduct = document.getElementById("xiaomi-filter-product");
+    const xiaomiFilterManufactured = document.getElementById("xiaomi-filter-manufactured");
+    const xiaomiFilterSerial = document.getElementById("xiaomi-filter-serial");
+    const xiaomiModeControl = document.getElementById("xiaomi-mode-control");
+    const xiaomiFanControl = document.getElementById("xiaomi-fan-control");
+    const xiaomiPlasmaControl = document.getElementById("xiaomi-plasma-control");
+    const xiaomiUvControl = document.getElementById("xiaomi-uv-control");
+    const xiaomiChildLockControl = document.getElementById("xiaomi-child-lock-control");
+    const xiaomiBrightnessControl = document.getElementById("xiaomi-brightness-control");
+    const xiaomiFavoriteLevelControl = document.getElementById("xiaomi-favorite-level-control");
+    const xiaomiTemperatureUnitControl = document.getElementById("xiaomi-temperature-unit-control");
+    const xiaomiAlarmControl = document.getElementById("xiaomi-alarm-control");
     
     // Tapo elements
     const btnRefreshTapo = document.getElementById("btn-refresh-tapo");
@@ -307,11 +347,60 @@ document.addEventListener("DOMContentLoaded", () => {
     setInterval(() => loadPresenceStatus(false), 30000);
 
     // --- XIAOMI PURIFIER: ONE-TIME LOGIN, THEN LOCAL CONTROL ---
+    const airQualityLabels = ["Excellent", "Good", "Light pollution", "Moderate pollution", "Heavy pollution", "Severe pollution"];
+    const modeLabels = ["Auto", "Sleep", "Favorite", "Manual"];
+    const faultLabels = { 0: "No fault", 1: "PM sensor error", 2: "Temperature/humidity sensor error", 4: "No filter" };
+    const brightnessLabels = ["Off", "Dim", "Normal"];
+    const temperatureUnitLabels = { 1: "Celsius", 2: "Fahrenheit" };
+    const rebootCauseLabels = { 0: "Hardware boot", 1: "User reboot", 2: "Update", 3: "Watchdog" };
+    const countryCodeLabels = { 17230: "China", 17749: "EU", 21843: "US", 21591: "Taiwan", 19282: "Korea", 21835: "UK" };
+
+    function displayValue(value, suffix = "") {
+        return value === null || value === undefined || value === "" ? "--" : `${value}${suffix}`;
+    }
+
+    function renderHeaderRoomStatus(data) {
+        headerAirQuality.textContent = data.airQuality === null || data.airQuality === undefined
+            ? "--"
+            : (airQualityLabels[data.airQuality] || `Level ${data.airQuality}`);
+        headerHumidity.textContent = displayValue(data.humidity, "%");
+        headerTemperature.textContent = displayValue(data.temperature === null || data.temperature === undefined ? null : Number(data.temperature).toFixed(1), "°C");
+    }
+
     function renderXiaomiStatus(data) {
+        renderHeaderRoomStatus(data);
         xiaomiDevice.textContent = `${data.deviceName || "Smart Air Purifier Elite"} · ${data.ipAddress || "192.168.1.106"}`;
         xiaomiLocalState.textContent = data.localValidated ? "Working" : (data.tokenStored ? "Ready to test" : "No token");
         xiaomiPowerState.textContent = data.power === true ? "On" : data.power === false ? "Off" : "Unknown";
         xiaomiMessage.textContent = data.message || "No Xiaomi status is available.";
+        xiaomiAirQuality.textContent = data.airQuality === null || data.airQuality === undefined ? "--" : (airQualityLabels[data.airQuality] || `Level ${data.airQuality}`);
+        xiaomiPm25.textContent = displayValue(data.pm25, " μg/m³");
+        xiaomiPm10.textContent = displayValue(data.pm10, " μg/m³");
+        xiaomiHumidity.textContent = displayValue(data.humidity, "%");
+        xiaomiTemperature.textContent = displayValue(data.temperature === null || data.temperature === undefined ? null : Number(data.temperature).toFixed(1), "°C");
+        xiaomiModeState.textContent = data.mode === null || data.mode === undefined ? "--" : (modeLabels[data.mode] || `Value ${data.mode}`);
+        xiaomiFanState.textContent = displayValue(data.fanLevel, data.fanLevel === null || data.fanLevel === undefined ? "" : " / 3");
+        xiaomiPlasmaState.textContent = data.plasma === true ? "On" : data.plasma === false ? "Off" : "--";
+        xiaomiUvState.textContent = data.uv === true ? "On" : data.uv === false ? "Off" : "--";
+        xiaomiFaultState.textContent = data.fault === null || data.fault === undefined ? "--" : (faultLabels[data.fault] || `Code ${data.fault}`);
+        xiaomiFilterLife.textContent = displayValue(data.filterLife, "%");
+        xiaomiFilterHours.textContent = displayValue(data.filterUsedHours, " hours");
+        xiaomiAlarmState.textContent = data.alarm === true ? "On" : data.alarm === false ? "Off" : "--";
+        xiaomiChildLockState.textContent = data.childLock === true ? "On" : data.childLock === false ? "Off" : "--";
+        xiaomiBrightnessState.textContent = data.screenBrightness === null || data.screenBrightness === undefined ? "--" : (brightnessLabels[data.screenBrightness] || `Value ${data.screenBrightness}`);
+        xiaomiFavoriteLevelState.textContent = displayValue(data.favoriteLevel, data.favoriteLevel === null || data.favoriteLevel === undefined ? "" : " / 14");
+        xiaomiTemperatureUnitState.textContent = temperatureUnitLabels[data.temperatureDisplayUnit] || displayValue(data.temperatureDisplayUnit);
+        xiaomiMotorRpm.textContent = displayValue(data.motorRpm, " rpm");
+        xiaomiRebootCause.textContent = data.rebootCause === null || data.rebootCause === undefined ? "--" : (rebootCauseLabels[data.rebootCause] || `Code ${data.rebootCause}`);
+        xiaomiIicErrors.textContent = displayValue(data.iicErrorCount);
+        xiaomiCountryCode.textContent = data.countryCode === null || data.countryCode === undefined ? "--" : (countryCodeLabels[data.countryCode] || `Code ${data.countryCode}`);
+        xiaomiFavoriteSquare.textContent = displayValue(data.favoriteSquare);
+        xiaomiAqiHeartbeat.textContent = displayValue(data.aqiUpdateHeartbeat);
+        xiaomiFilterTag.textContent = displayValue(data.filterTag);
+        xiaomiFilterFactory.textContent = displayValue(data.filterFactoryId);
+        xiaomiFilterProduct.textContent = displayValue(data.filterProductId);
+        xiaomiFilterManufactured.textContent = displayValue(data.filterManufacturedAt);
+        xiaomiFilterSerial.textContent = displayValue(data.filterSerialNumber);
 
         const ready = data.localValidated === true;
         xiaomiStateBadge.textContent = ready ? "Local ready" : data.loginRunning ? "Waiting for scan" : data.tokenStored ? "Token ready" : "Not set up";
@@ -321,6 +410,24 @@ document.addEventListener("DOMContentLoaded", () => {
         btnXiaomiTest.disabled = !data.tokenStored || data.loginRunning;
         btnXiaomiOn.disabled = !ready;
         btnXiaomiOff.disabled = !ready;
+        xiaomiModeControl.disabled = !ready;
+        xiaomiFanControl.disabled = !ready;
+        xiaomiPlasmaControl.disabled = !ready;
+        xiaomiUvControl.disabled = !ready;
+        xiaomiChildLockControl.disabled = !ready;
+        xiaomiBrightnessControl.disabled = !ready;
+        xiaomiFavoriteLevelControl.disabled = !ready;
+        xiaomiTemperatureUnitControl.disabled = !ready;
+        xiaomiAlarmControl.disabled = !ready;
+        if (data.mode !== null && data.mode !== undefined) xiaomiModeControl.value = String(data.mode);
+        if (data.fanLevel !== null && data.fanLevel !== undefined) xiaomiFanControl.value = String(data.fanLevel);
+        if (data.plasma !== null && data.plasma !== undefined) xiaomiPlasmaControl.checked = data.plasma;
+        if (data.uv !== null && data.uv !== undefined) xiaomiUvControl.checked = data.uv;
+        if (data.childLock !== null && data.childLock !== undefined) xiaomiChildLockControl.checked = data.childLock;
+        if (data.screenBrightness !== null && data.screenBrightness !== undefined) xiaomiBrightnessControl.value = String(data.screenBrightness);
+        if (data.favoriteLevel !== null && data.favoriteLevel !== undefined) xiaomiFavoriteLevelControl.value = String(data.favoriteLevel);
+        if (data.temperatureDisplayUnit !== null && data.temperatureDisplayUnit !== undefined) xiaomiTemperatureUnitControl.value = String(data.temperatureDisplayUnit);
+        if (data.alarm !== null && data.alarm !== undefined) xiaomiAlarmControl.checked = data.alarm;
         xiaomiAutomation.disabled = !ready;
         xiaomiAutomation.checked = data.automationEnabled === true;
         xiaomiLastAutomation.textContent = data.lastAutomationAt
@@ -365,6 +472,28 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     btnXiaomiOn.addEventListener("click", () => setXiaomiPower(true));
     btnXiaomiOff.addEventListener("click", () => setXiaomiPower(false));
+
+    async function setXiaomiControl(control, payload, input = null) {
+        if (input) input.disabled = true;
+        try {
+            renderXiaomiStatus(await apiRequest("/api/xiaomi-purifier/control", "POST", { control, ...payload }));
+        } catch (error) {
+            xiaomiMessage.textContent = error.message;
+            await loadXiaomiStatus();
+        } finally {
+            if (input) input.disabled = false;
+        }
+    }
+
+    xiaomiModeControl.addEventListener("change", () => setXiaomiControl("mode", { value: Number(xiaomiModeControl.value) }, xiaomiModeControl));
+    xiaomiFanControl.addEventListener("change", () => setXiaomiControl("fanLevel", { value: Number(xiaomiFanControl.value) }, xiaomiFanControl));
+    xiaomiPlasmaControl.addEventListener("change", () => setXiaomiControl("plasma", { enabled: xiaomiPlasmaControl.checked }, xiaomiPlasmaControl));
+    xiaomiUvControl.addEventListener("change", () => setXiaomiControl("uv", { enabled: xiaomiUvControl.checked }, xiaomiUvControl));
+    xiaomiChildLockControl.addEventListener("change", () => setXiaomiControl("childLock", { enabled: xiaomiChildLockControl.checked }, xiaomiChildLockControl));
+    xiaomiBrightnessControl.addEventListener("change", () => setXiaomiControl("brightness", { value: Number(xiaomiBrightnessControl.value) }, xiaomiBrightnessControl));
+    xiaomiFavoriteLevelControl.addEventListener("change", () => setXiaomiControl("favoriteLevel", { value: Number(xiaomiFavoriteLevelControl.value) }, xiaomiFavoriteLevelControl));
+    xiaomiTemperatureUnitControl.addEventListener("change", () => setXiaomiControl("temperatureUnit", { value: Number(xiaomiTemperatureUnitControl.value) }, xiaomiTemperatureUnitControl));
+    xiaomiAlarmControl.addEventListener("change", () => setXiaomiControl("alarm", { enabled: xiaomiAlarmControl.checked }, xiaomiAlarmControl));
 
     xiaomiAutomation.addEventListener("change", async () => {
         xiaomiAutomation.disabled = true;

@@ -13,8 +13,10 @@ public interface IXiaomiPurifierService
 {
     XiaomiPurifierStatusDto GetStatus();
     XiaomiPurifierStatusDto StartLogin();
+    Task<XiaomiPurifierStatusDto> RefreshAsync(CancellationToken cancellationToken);
     Task<XiaomiPurifierStatusDto> TestLocalAsync(CancellationToken cancellationToken);
     Task<XiaomiPurifierStatusDto> SetPowerAsync(bool power, CancellationToken cancellationToken);
+    Task<XiaomiPurifierStatusDto> SetControlAsync(XiaomiControlRequest request, CancellationToken cancellationToken);
     XiaomiPurifierStatusDto SetAutomation(bool enabled);
     Task ApplyPresenceAsync(bool isHome, CancellationToken cancellationToken);
     string QrCodePath { get; }
@@ -32,6 +34,8 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
     private readonly ILogger<XiaomiPurifierService> _logger;
     private readonly string _settingsPath;
     private readonly string _tokenPath;
+    private readonly string _qrDirectory;
+    private readonly string _configuredQrPath;
     private readonly string _authPath = Path.Combine(AppContext.BaseDirectory, "auth.json");
     private readonly object _lock = new();
     private readonly SemaphoreSlim _localLock = new(1, 1);
@@ -46,14 +50,15 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
         _logger = logger;
         _settingsPath = LocalStatePath.Resolve(config, "Storage:XiaomiPurifierFile", "xiaomi-purifier.json");
         _tokenPath = LocalStatePath.Resolve(config, "Storage:XiaomiPurifierTokenFile", "xiaomi-purifier-token.dat");
-        QrCodePath = Path.Combine(LocalStatePath.Resolve(config, "Storage:XiaomiQrDirectory", "xiaomi-qr"), "qr.png");
+        _qrDirectory = LocalStatePath.Resolve(config, "Storage:XiaomiQrDirectory", "xiaomi-qr");
+        _configuredQrPath = Path.Combine(_qrDirectory, "qr.png");
         _settings = LoadSettings() ?? new XiaomiPurifierSettings();
         _snapshot.Message = HasTokenLocked()
             ? "Local token is stored. Run the LAN test before enabling automation."
             : "Start one-time Xiaomi Home sign-in to obtain the local token.";
     }
 
-    public string QrCodePath { get; }
+    public string QrCodePath => FindQrCodePath() ?? _configuredQrPath;
 
     public XiaomiPurifierStatusDto GetStatus()
     {
@@ -66,9 +71,10 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
         {
             if (_loginRunning) return BuildStatusLocked();
             _loginRunning = true;
-            _snapshot.Message = "Preparing Xiaomi Home QR code…";
-            TryDelete(QrCodePath);
-            TryDelete(_authPath);
+            _snapshot.Message = "Preparing Xiaomi Home QR sign-in…";
+            _logger.LogInformation("[Xiaomi] QR login started; configured QR directory is {QrDirectory}.", _qrDirectory);
+            TryDeleteQrCodes();
+            TryDeleteAuthFiles();
             _ = Task.Run(LoginWorkerAsync);
             return BuildStatusLocked();
         }
@@ -80,8 +86,12 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
         {
             using var scope = _scopeFactory.CreateScope();
             var driver = scope.ServiceProvider.GetRequiredService<IMiHomeDriver>();
+            _logger.LogInformation("[Xiaomi] Starting MiHome.Net cloud QR login.");
             await driver.Cloud.LoginAsync();
+            _logger.LogInformation("[Xiaomi] MiHome.Net cloud login completed; reading the Malaysia-region device list.");
+            SetMessage("Xiaomi account signed in. Looking up devices in the Malaysia region…");
             var devices = await GetMalaysiaDevicesAsync();
+            _logger.LogInformation("[Xiaomi] Malaysia-region device list returned {DeviceCount} device(s).", devices.Count);
             var purifier = devices.FirstOrDefault(d => string.Equals(NormalizeMac(d.Mac), ExpectedMac, StringComparison.OrdinalIgnoreCase))
                 ?? devices.FirstOrDefault(d => string.Equals(d.Model, ExpectedModel, StringComparison.OrdinalIgnoreCase))
                 ?? devices.FirstOrDefault(d => string.Equals(d.LocalIp, "192.168.1.106", StringComparison.OrdinalIgnoreCase));
@@ -95,6 +105,7 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
             if (string.IsNullOrWhiteSpace(purifier.Token) || !TokenPattern.IsMatch(purifier.Token))
                 throw new InvalidOperationException("The purifier was found, but Xiaomi did not provide a usable local token.");
 
+            _logger.LogInformation("[Xiaomi] Matched purifier model {Model}; storing its local token.", purifier.Model);
             SaveEncryptedToken(purifier.Token);
             lock (_lock)
             {
@@ -119,19 +130,26 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
             try
             {
                 using var scope = _scopeFactory.CreateScope();
-                await scope.ServiceProvider.GetRequiredService<IMiHomeDriver>().Cloud.LogOutAsync();
+                await scope.ServiceProvider.GetRequiredService<IMiHomeDriver>().Cloud.LogOutAsync().WaitAsync(TimeSpan.FromSeconds(10));
             }
             catch (Exception ex) { _logger.LogDebug(ex, "[Xiaomi] Could not clear the temporary cloud session through the library."); }
-            TryDelete(_authPath);
-            TryDelete(QrCodePath);
+            TryDeleteAuthFiles();
+            TryDeleteQrCodes();
             lock (_lock) _loginRunning = false;
         }
     }
 
     private async Task<List<XiaoMiDeviceInfo>> GetMalaysiaDevicesAsync()
     {
-        if (!File.Exists(_authPath)) throw new InvalidOperationException("Xiaomi sign-in completed without creating temporary account credentials.");
-        var auth = JsonSerializer.Deserialize<XiaomiLoginInfo>(File.ReadAllText(_authPath), new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        string? authPath = FindAuthPath();
+        if (authPath == null)
+        {
+            _logger.LogError("[Xiaomi] MiHome.Net login returned without auth.json. Expected: {AuthPath}.", _authPath);
+            throw new InvalidOperationException("Xiaomi sign-in completed, but MiHome.Net did not create its temporary auth.json file.");
+        }
+
+        _logger.LogInformation("[Xiaomi] Temporary MiHome.Net credentials found; requesting the Malaysia-region device list.");
+        var auth = JsonSerializer.Deserialize<XiaomiLoginInfo>(File.ReadAllText(authPath), new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
         if (auth == null || string.IsNullOrWhiteSpace(auth.UserId) || string.IsNullOrWhiteSpace(auth.ServiceToken) || string.IsNullOrWhiteSpace(auth.Ssecurity))
             throw new InvalidOperationException("Xiaomi sign-in credentials were incomplete.");
 
@@ -163,8 +181,10 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
         client.DefaultRequestHeaders.TryAddWithoutValidation("Accept", "*/*");
 
         using var content = new FormUrlEncodedContent(parameters.Where(p => p.Key != "signedNonce"));
+        _logger.LogInformation("[Xiaomi] Sending the Malaysia-region device-list request to {Endpoint}.", endpoint.Host);
         using var response = await client.PostAsync(endpoint, content);
         string encryptedResponse = await response.Content.ReadAsStringAsync();
+        _logger.LogInformation("[Xiaomi] Malaysia-region device-list response: HTTP {StatusCode}.", (int)response.StatusCode);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException($"Xiaomi Singapore device request failed with HTTP {(int)response.StatusCode}.");
 
@@ -175,6 +195,7 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
         var result = JsonSerializer.Deserialize<GetDeviceListOutputResult>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
         if (result?.Code != 0)
             throw new InvalidOperationException("Xiaomi Singapore device request failed: " + (result?.Message ?? "unknown response"));
+        _logger.LogInformation("[Xiaomi] Malaysia-region response decoded successfully; received {DeviceCount} device(s).", result.Result?.List?.Count ?? 0);
         return result.Result?.List ?? new List<XiaoMiDeviceInfo>();
     }
 
@@ -223,33 +244,125 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
     private static string DecryptRegionalData(string signedNonce, string encryptedData) =>
         Encoding.UTF8.GetString(new Rc4(signedNonce).Init1024().Crypt(Convert.FromBase64String(encryptedData)));
 
-    public async Task<XiaomiPurifierStatusDto> TestLocalAsync(CancellationToken cancellationToken)
+    public async Task<XiaomiPurifierStatusDto> RefreshAsync(CancellationToken cancellationToken)
     {
+        lock (_lock)
+        {
+            // The cloud QR login and local LAN refresh can overlap while the
+            // browser is polling. Do not let a local read block QR discovery.
+            if (_loginRunning || !HasTokenLocked()) return BuildStatusLocked();
+        }
         await _localLock.WaitAsync(cancellationToken);
         try
         {
             var (ip, token) = GetLocalCredentials();
             using var scope = _scopeFactory.CreateScope();
             var local = scope.ServiceProvider.GetRequiredService<IMiHomeDriver>().Local;
-            var result = await Task.Run(() => local.GetPropertyAsync(ip, token, new GetPropertyPayload { Siid = 2, Piid = 1 }), cancellationToken)
-                .WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
-            var item = result?.Result?.FirstOrDefault();
-            if (item == null || item.Code != 0)
-                throw new InvalidOperationException($"The purifier returned error code {item?.Code.ToString() ?? "none"}.");
+            var payloads = new List<GetPropertyPayload>
+            {
+                new() { Siid = 2, Piid = 1 }, new() { Siid = 2, Piid = 2 }, new() { Siid = 2, Piid = 4 },
+                new() { Siid = 2, Piid = 5 }, new() { Siid = 2, Piid = 6 }, new() { Siid = 2, Piid = 7 },
+                new() { Siid = 3, Piid = 1 }, new() { Siid = 3, Piid = 4 }, new() { Siid = 3, Piid = 7 },
+                new() { Siid = 3, Piid = 8 }, new() { Siid = 3, Piid = 9 }, new() { Siid = 4, Piid = 1 },
+                new() { Siid = 4, Piid = 3 }, new() { Siid = 6, Piid = 1 }, new() { Siid = 8, Piid = 1 },
+                new() { Siid = 13, Piid = 2 }, new() { Siid = 14, Piid = 1 }, new() { Siid = 15, Piid = 1 },
+                new() { Siid = 9, Piid = 1 }, new() { Siid = 9, Piid = 8 }, new() { Siid = 9, Piid = 10 },
+                new() { Siid = 9, Piid = 11 }, new() { Siid = 9, Piid = 12 }, new() { Siid = 12, Piid = 1 },
+                new() { Siid = 12, Piid = 2 }, new() { Siid = 12, Piid = 3 }, new() { Siid = 12, Piid = 4 },
+                new() { Siid = 12, Piid = 5 }, new() { Siid = 11, Piid = 4 }
+            };
+            var values = new Dictionary<(int Siid, int Piid), GetPropertiesResultItem>();
 
-            bool power = ReadBoolean(item.Value);
+            // Keep the original single-property power read as the LAN
+            // validation probe. It worked before the readings were added, and
+            // some purifier firmware returns an empty result for an oversized
+            // get_properties request even though get_prop works normally.
+            var powerResult = await ReadPropertyAsync(local, ip, token, payloads[0], cancellationToken, TimeSpan.FromSeconds(10));
+            AddPropertyResults(values, powerResult, payloads[0]);
+            var power = ReadBoolean(values, 2, 1);
+            if (power == null)
+            {
+                _logger.LogWarning(
+                    "[Xiaomi] Local power read returned no usable value. Result count: {ResultCount}; error code: {ErrorCode}.",
+                    powerResult?.Result?.Count ?? 0,
+                    ErrorCode(values, 2, 1));
+                throw new InvalidOperationException($"The purifier did not return its power state. Error code: {ErrorCode(values, 2, 1)}.");
+            }
+
+            // Read the remaining properties in small groups. This avoids the
+            // empty response seen when all model properties are sent at once.
+            foreach (var chunk in payloads.Skip(1).Chunk(8))
+            {
+                try
+                {
+                    var result = await ReadPropertiesAsync(local, ip, token, chunk.ToList(), cancellationToken, TimeSpan.FromSeconds(5));
+                    AddPropertyResults(values, result);
+                    _logger.LogDebug("[Xiaomi] Local property batch returned {ResultCount} item(s) for {RequestedCount} requested property(ies).", result?.Result?.Count ?? 0, chunk.Length);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogWarning(ex, "[Xiaomi] Local property batch failed for {RequestedCount} requested property(ies); falling back to individual reads.", chunk.Length);
+                }
+            }
+
+            // If a batch is unsupported or only partially supported, recover
+            // the missing readings one at a time. Optional properties may still
+            // remain unavailable, but they must not invalidate power control.
+            foreach (var payload in payloads.Skip(1))
+            {
+                if (values.TryGetValue((payload.Siid, payload.Piid), out var existing) && existing.Code == 0) continue;
+                try
+                {
+                    var result = await ReadPropertyAsync(local, ip, token, payload, cancellationToken, TimeSpan.FromSeconds(3));
+                    AddPropertyResults(values, result, payload);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogDebug(ex, "[Xiaomi] Optional local property {Siid}/{Piid} could not be read.", payload.Siid, payload.Piid);
+                }
+            }
+
             lock (_lock)
             {
                 _settings.LocalValidated = true;
                 SaveSettingsLocked();
-                _snapshot.Power = power;
+                _snapshot.Power = power.Value;
+                _snapshot.Mode = ReadInt(values, 2, 4);
+                _snapshot.FanLevel = ReadInt(values, 2, 5);
+                _snapshot.Plasma = ReadBoolean(values, 2, 6);
+                _snapshot.Uv = ReadBoolean(values, 2, 7);
+                _snapshot.Fault = ReadInt(values, 2, 2);
+                _snapshot.Humidity = ReadInt(values, 3, 1);
+                _snapshot.Pm25 = ReadDouble(values, 3, 4);
+                _snapshot.Temperature = ReadDouble(values, 3, 7);
+                _snapshot.Pm10 = ReadDouble(values, 3, 8);
+                _snapshot.AirQuality = ReadInt(values, 3, 9);
+                _snapshot.FilterLife = ReadInt(values, 4, 1);
+                _snapshot.FilterUsedHours = ReadInt(values, 4, 3);
+                _snapshot.Alarm = ReadBoolean(values, 6, 1);
+                _snapshot.ChildLock = ReadBoolean(values, 8, 1);
+                _snapshot.ScreenBrightness = ReadInt(values, 13, 2);
+                _snapshot.FavoriteLevel = ReadInt(values, 14, 1);
+                _snapshot.TemperatureDisplayUnit = ReadInt(values, 15, 1);
+                _snapshot.MotorRpm = ReadInt(values, 9, 1);
+                _snapshot.RebootCause = ReadInt(values, 9, 8);
+                _snapshot.IicErrorCount = ReadInt(values, 9, 10);
+                _snapshot.CountryCode = ReadInt(values, 9, 11);
+                _snapshot.FavoriteSquare = ReadString(values, 9, 12);
+                _snapshot.FilterTag = ReadString(values, 12, 1);
+                _snapshot.FilterFactoryId = ReadString(values, 12, 2);
+                _snapshot.FilterProductId = ReadString(values, 12, 3);
+                _snapshot.FilterManufacturedAt = ReadString(values, 12, 4);
+                _snapshot.FilterSerialNumber = ReadString(values, 12, 5);
+                _snapshot.AqiUpdateHeartbeat = ReadInt(values, 11, 4);
                 _snapshot.LastLocalContact = DateTimeOffset.Now;
-                _snapshot.Message = $"Direct LAN control works. Purifier is currently {(power ? "on" : "off")}.";
+                _snapshot.Message = $"Local status refreshed. Purifier is currently {(power.Value ? "on" : "off")}.";
                 return BuildStatusLocked();
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            _logger.LogWarning(ex, "[Xiaomi] Local purifier status refresh failed.");
             lock (_lock)
             {
                 _settings.LocalValidated = false;
@@ -261,6 +374,44 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
         }
         finally { _localLock.Release(); }
     }
+
+    private static async Task<GetPropertiesResult?> ReadPropertyAsync(
+        IMiotLocal local,
+        string ip,
+        string token,
+        GetPropertyPayload payload,
+        CancellationToken cancellationToken,
+        TimeSpan timeout) =>
+        await Task.Run(() => local.GetPropertyAsync(ip, token, payload), cancellationToken)
+            .WaitAsync(timeout, cancellationToken);
+
+    private static async Task<GetPropertiesResult?> ReadPropertiesAsync(
+        IMiotLocal local,
+        string ip,
+        string token,
+        List<GetPropertyPayload> payloads,
+        CancellationToken cancellationToken,
+        TimeSpan timeout) =>
+        await Task.Run(() => local.GetPropertiesAsync(ip, token, payloads), cancellationToken)
+            .WaitAsync(timeout, cancellationToken);
+
+    private static void AddPropertyResults(
+        Dictionary<(int Siid, int Piid), GetPropertiesResultItem> values,
+        GetPropertiesResult? result,
+        GetPropertyPayload? requestedPayload = null)
+    {
+        var items = result?.Result ?? new List<GetPropertiesResultItem>();
+        foreach (var item in items.Where(item => item != null))
+            values[(item.Siid, item.Piid)] = item;
+
+        // MiHome.Net normally echoes siid/piid in the response. Preserve the
+        // requested key for a single-property response if a device omits them.
+        var first = items.FirstOrDefault();
+        if (requestedPayload != null && first != null && !values.ContainsKey((requestedPayload.Siid, requestedPayload.Piid)))
+            values[(requestedPayload.Siid, requestedPayload.Piid)] = first;
+    }
+
+    public Task<XiaomiPurifierStatusDto> TestLocalAsync(CancellationToken cancellationToken) => RefreshAsync(cancellationToken);
 
     public async Task<XiaomiPurifierStatusDto> SetPowerAsync(bool power, CancellationToken cancellationToken)
     {
@@ -284,8 +435,6 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
             {
                 _snapshot.Power = power;
                 _snapshot.LastLocalContact = DateTimeOffset.Now;
-                _snapshot.Message = $"Purifier turned {(power ? "on" : "off")} over the local network.";
-                return BuildStatusLocked();
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException && ex is not InvalidOperationException)
@@ -293,6 +442,87 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
             throw new InvalidOperationException("Local purifier command failed: " + CleanMessage(ex.Message), ex);
         }
         finally { _localLock.Release(); }
+
+        return await RefreshAfterCommandAsync(
+            $"Purifier turned {(power ? "on" : "off")} over the local network.",
+            cancellationToken);
+    }
+
+    public async Task<XiaomiPurifierStatusDto> SetControlAsync(XiaomiControlRequest request, CancellationToken cancellationToken)
+    {
+        (int siid, int piid, object value, Action<XiaomiPurifierSnapshot> update) = ResolveControl(request);
+        await _localLock.WaitAsync(cancellationToken);
+        try
+        {
+            lock (_lock)
+            {
+                if (!_settings.LocalValidated) throw new InvalidOperationException("Run a successful LAN test first.");
+            }
+            var (ip, token) = GetLocalCredentials();
+            using var scope = _scopeFactory.CreateScope();
+            var local = scope.ServiceProvider.GetRequiredService<IMiHomeDriver>().Local;
+            var result = await Task.Run(() => local.SetPropertyAsync(ip, token, new SetPropertyPayload { Siid = siid, Piid = piid, Value = value }), cancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+            var item = result?.Result?.FirstOrDefault();
+            if (item == null || item.Code != 0)
+                throw new InvalidOperationException($"The purifier returned error code {item?.Code.ToString() ?? "none"}.");
+
+            lock (_lock)
+            {
+                update(_snapshot);
+                _snapshot.LastLocalContact = DateTimeOffset.Now;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException && ex is not InvalidOperationException)
+        {
+            throw new InvalidOperationException("Local purifier command failed: " + CleanMessage(ex.Message), ex);
+        }
+        finally { _localLock.Release(); }
+
+        return await RefreshAfterCommandAsync(
+            $"Purifier {request.Control} updated over the local network.",
+            cancellationToken);
+    }
+
+    private async Task<XiaomiPurifierStatusDto> RefreshAfterCommandAsync(string commandMessage, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await RefreshAsync(cancellationToken);
+            lock (_lock)
+            {
+                _snapshot.Message = commandMessage + " Status refreshed.";
+                return BuildStatusLocked();
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            // The command already succeeded. Keep the command result visible
+            // if the follow-up read is temporarily unavailable.
+            lock (_lock)
+            {
+                _snapshot.Message = commandMessage + " Status refresh failed: " + CleanMessage(ex.Message);
+                return BuildStatusLocked();
+            }
+        }
+    }
+
+    private static (int Siid, int Piid, object Value, Action<XiaomiPurifierSnapshot> Update) ResolveControl(XiaomiControlRequest request)
+    {
+        string control = (request.Control ?? string.Empty).Trim().ToLowerInvariant();
+        return control switch
+        {
+            "mode" when request.Value is >= 0 and <= 3 => (2, 4, request.Value.Value, snapshot => snapshot.Mode = request.Value.Value),
+            "fanlevel" when request.Value is >= 1 and <= 3 => (2, 5, request.Value.Value, snapshot => snapshot.FanLevel = request.Value.Value),
+            "plasma" when request.Enabled.HasValue => (2, 6, request.Enabled.Value, snapshot => snapshot.Plasma = request.Enabled.Value),
+            "uv" when request.Enabled.HasValue => (2, 7, request.Enabled.Value, snapshot => snapshot.Uv = request.Enabled.Value),
+            "alarm" when request.Enabled.HasValue => (6, 1, request.Enabled.Value, snapshot => snapshot.Alarm = request.Enabled.Value),
+            "childlock" when request.Enabled.HasValue => (8, 1, request.Enabled.Value, snapshot => snapshot.ChildLock = request.Enabled.Value),
+            "brightness" when request.Value is >= 0 and <= 2 => (13, 2, request.Value.Value, snapshot => snapshot.ScreenBrightness = request.Value.Value),
+            "favoritelevel" when request.Value is >= 0 and <= 14 => (14, 1, request.Value.Value, snapshot => snapshot.FavoriteLevel = request.Value.Value),
+            "temperatureunit" when request.Value is 1 or 2 => (15, 1, request.Value.Value, snapshot => snapshot.TemperatureDisplayUnit = request.Value.Value),
+            _ => throw new InvalidOperationException("Unsupported purifier control or value.")
+        };
     }
 
     public XiaomiPurifierStatusDto SetAutomation(bool enabled)
@@ -388,10 +618,38 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
         IpAddress = _settings.IpAddress,
         TokenStored = HasTokenLocked(),
         LoginRunning = _loginRunning,
-        QrReady = _loginRunning && File.Exists(QrCodePath),
+        QrReady = _loginRunning && FindQrCodePath() is not null,
         LocalValidated = _settings.LocalValidated,
         AutomationEnabled = _settings.AutomationEnabled,
         Power = _snapshot.Power,
+        Mode = _snapshot.Mode,
+        FanLevel = _snapshot.FanLevel,
+        Plasma = _snapshot.Plasma,
+        Uv = _snapshot.Uv,
+        Fault = _snapshot.Fault,
+        Humidity = _snapshot.Humidity,
+        Pm25 = _snapshot.Pm25,
+        Temperature = _snapshot.Temperature,
+        Pm10 = _snapshot.Pm10,
+        AirQuality = _snapshot.AirQuality,
+        FilterLife = _snapshot.FilterLife,
+        FilterUsedHours = _snapshot.FilterUsedHours,
+        Alarm = _snapshot.Alarm,
+        ChildLock = _snapshot.ChildLock,
+        ScreenBrightness = _snapshot.ScreenBrightness,
+        FavoriteLevel = _snapshot.FavoriteLevel,
+        TemperatureDisplayUnit = _snapshot.TemperatureDisplayUnit,
+        MotorRpm = _snapshot.MotorRpm,
+        RebootCause = _snapshot.RebootCause,
+        IicErrorCount = _snapshot.IicErrorCount,
+        CountryCode = _snapshot.CountryCode,
+        FavoriteSquare = _snapshot.FavoriteSquare,
+        AqiUpdateHeartbeat = _snapshot.AqiUpdateHeartbeat,
+        FilterTag = _snapshot.FilterTag,
+        FilterFactoryId = _snapshot.FilterFactoryId,
+        FilterProductId = _snapshot.FilterProductId,
+        FilterManufacturedAt = _snapshot.FilterManufacturedAt,
+        FilterSerialNumber = _snapshot.FilterSerialNumber,
         LastLocalContact = _snapshot.LastLocalContact,
         LastAutomationAt = _settings.LastAutomationAt,
         LastAutomationResult = _settings.LastAutomationResult,
@@ -399,6 +657,64 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
     };
 
     private bool HasTokenLocked() => File.Exists(_tokenPath);
+
+    private void SetMessage(string message)
+    {
+        lock (_lock) _snapshot.Message = message;
+    }
+
+    private string? FindAuthPath()
+    {
+        foreach (string path in AuthFileCandidates())
+        {
+            if (File.Exists(path)) return path;
+        }
+        return null;
+    }
+
+    private void TryDeleteAuthFiles()
+    {
+        foreach (string path in AuthFileCandidates()) TryDelete(path);
+    }
+
+    private IEnumerable<string> AuthFileCandidates()
+    {
+        yield return _authPath;
+
+        string? stateDirectory = Path.GetDirectoryName(_tokenPath);
+        if (!string.IsNullOrWhiteSpace(stateDirectory))
+            yield return Path.Combine(stateDirectory, "auth.json");
+
+        yield return Path.Combine(Directory.GetCurrentDirectory(), "auth.json");
+    }
+
+    private string? FindQrCodePath()
+    {
+        foreach (string path in new[]
+        {
+            _configuredQrPath,
+            Path.Combine(_qrDirectory, "qr.png"),
+            Path.Combine(AppContext.BaseDirectory, "output", "qr.png"),
+            Path.Combine(Directory.GetCurrentDirectory(), "output", "qr.png")
+        }.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (File.Exists(path)) return path;
+        }
+        return null;
+    }
+
+    private void TryDeleteQrCodes()
+    {
+        foreach (string path in new[]
+        {
+            _configuredQrPath,
+            Path.Combine(AppContext.BaseDirectory, "output", "qr.png"),
+            Path.Combine(Directory.GetCurrentDirectory(), "output", "qr.png")
+        }.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            TryDelete(path);
+        }
+    }
 
     private XiaomiPurifierSettings? LoadSettings()
     {
@@ -421,6 +737,37 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
         throw new InvalidOperationException("The purifier returned an unexpected power value.");
     }
 
+    private static bool? ReadBoolean(Dictionary<(int Siid, int Piid), GetPropertiesResultItem> values, int siid, int piid)
+    {
+        object? value = ReadValue(values, siid, piid);
+        if (value == null) return null;
+        try { return ReadBoolean(value); }
+        catch { return null; }
+    }
+
+    private static int? ReadInt(Dictionary<(int Siid, int Piid), GetPropertiesResultItem> values, int siid, int piid)
+    {
+        object? value = ReadValue(values, siid, piid);
+        if (value == null) return null;
+        return int.TryParse(Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture), out int result) ? result : null;
+    }
+
+    private static double? ReadDouble(Dictionary<(int Siid, int Piid), GetPropertiesResultItem> values, int siid, int piid)
+    {
+        object? value = ReadValue(values, siid, piid);
+        if (value == null) return null;
+        return double.TryParse(Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double result) ? result : null;
+    }
+
+    private static string? ReadString(Dictionary<(int Siid, int Piid), GetPropertiesResultItem> values, int siid, int piid) =>
+        Convert.ToString(ReadValue(values, siid, piid), System.Globalization.CultureInfo.InvariantCulture);
+
+    private static object? ReadValue(Dictionary<(int Siid, int Piid), GetPropertiesResultItem> values, int siid, int piid) =>
+        values.TryGetValue((siid, piid), out var item) && item.Code == 0 ? item.Value : null;
+
+    private static string ErrorCode(Dictionary<(int Siid, int Piid), GetPropertiesResultItem> values, int siid, int piid) =>
+        values.TryGetValue((siid, piid), out var item) ? item.Code.ToString(System.Globalization.CultureInfo.InvariantCulture) : "missing";
+
     private static string NormalizeMac(string? value) => (value ?? string.Empty).Trim().Replace('-', ':').ToUpperInvariant();
     private static string CleanMessage(string value) => string.IsNullOrWhiteSpace(value) ? "Unknown error." : value.Replace('\r', ' ').Replace('\n', ' ').Trim();
     private static void TryDelete(string path) { try { if (File.Exists(path)) File.Delete(path); } catch { } }
@@ -441,6 +788,34 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
     private sealed class XiaomiPurifierSnapshot
     {
         public bool? Power { get; set; }
+        public int? Mode { get; set; }
+        public int? FanLevel { get; set; }
+        public bool? Plasma { get; set; }
+        public bool? Uv { get; set; }
+        public int? Fault { get; set; }
+        public int? Humidity { get; set; }
+        public double? Pm25 { get; set; }
+        public double? Temperature { get; set; }
+        public double? Pm10 { get; set; }
+        public int? AirQuality { get; set; }
+        public int? FilterLife { get; set; }
+        public int? FilterUsedHours { get; set; }
+        public bool? Alarm { get; set; }
+        public bool? ChildLock { get; set; }
+        public int? ScreenBrightness { get; set; }
+        public int? FavoriteLevel { get; set; }
+        public int? TemperatureDisplayUnit { get; set; }
+        public int? MotorRpm { get; set; }
+        public int? RebootCause { get; set; }
+        public int? IicErrorCount { get; set; }
+        public int? CountryCode { get; set; }
+        public string? FavoriteSquare { get; set; }
+        public int? AqiUpdateHeartbeat { get; set; }
+        public string? FilterTag { get; set; }
+        public string? FilterFactoryId { get; set; }
+        public string? FilterProductId { get; set; }
+        public string? FilterManufacturedAt { get; set; }
+        public string? FilterSerialNumber { get; set; }
         public DateTimeOffset? LastLocalContact { get; set; }
         public string Message { get; set; } = string.Empty;
     }
@@ -455,6 +830,7 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
 }
 
 public sealed record XiaomiAutomationRequest(bool Enabled);
+public sealed record XiaomiControlRequest(string Control, int? Value = null, bool? Enabled = null);
 
 public sealed class XiaomiPurifierStatusDto
 {
@@ -467,6 +843,34 @@ public sealed class XiaomiPurifierStatusDto
     public bool LocalValidated { get; init; }
     public bool AutomationEnabled { get; init; }
     public bool? Power { get; init; }
+    public int? Mode { get; init; }
+    public int? FanLevel { get; init; }
+    public bool? Plasma { get; init; }
+    public bool? Uv { get; init; }
+    public int? Fault { get; init; }
+    public int? Humidity { get; init; }
+    public double? Pm25 { get; init; }
+    public double? Temperature { get; init; }
+    public double? Pm10 { get; init; }
+    public int? AirQuality { get; init; }
+    public int? FilterLife { get; init; }
+    public int? FilterUsedHours { get; init; }
+    public bool? Alarm { get; init; }
+    public bool? ChildLock { get; init; }
+    public int? ScreenBrightness { get; init; }
+    public int? FavoriteLevel { get; init; }
+    public int? TemperatureDisplayUnit { get; init; }
+    public int? MotorRpm { get; init; }
+    public int? RebootCause { get; init; }
+    public int? IicErrorCount { get; init; }
+    public int? CountryCode { get; init; }
+    public string? FavoriteSquare { get; init; }
+    public int? AqiUpdateHeartbeat { get; init; }
+    public string? FilterTag { get; init; }
+    public string? FilterFactoryId { get; init; }
+    public string? FilterProductId { get; init; }
+    public string? FilterManufacturedAt { get; init; }
+    public string? FilterSerialNumber { get; init; }
     public DateTimeOffset? LastLocalContact { get; init; }
     public DateTimeOffset? LastAutomationAt { get; init; }
     public string? LastAutomationResult { get; init; }

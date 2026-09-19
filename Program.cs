@@ -503,7 +503,21 @@ class Program
         });
 
         // 16. Xiaomi purifier: one-time cloud token retrieval, then local-only control
-        app.MapGet("/api/xiaomi-purifier", (IXiaomiPurifierService service) => Results.Ok(service.GetStatus()));
+        app.MapGet("/api/xiaomi-purifier", async (IXiaomiPurifierService service, CancellationToken cancellationToken) =>
+        {
+            try
+            {
+                return Results.Ok(await service.RefreshAsync(cancellationToken));
+            }
+            catch (InvalidOperationException)
+            {
+                // A failed LAN refresh must not hide a token that was already
+                // obtained by the one-time cloud sign-in. Return the latest
+                // status so the UI can show "Token ready" and the actual LAN
+                // error instead of leaving the previous QR-login state visible.
+                return Results.Ok(service.GetStatus());
+            }
+        });
 
         app.MapPost("/api/xiaomi-purifier/login", (IXiaomiPurifierService service) => Results.Ok(service.StartLogin()));
 
@@ -517,6 +531,12 @@ class Program
         app.MapPost("/api/xiaomi-purifier/test", async (IXiaomiPurifierService service, CancellationToken cancellationToken) =>
         {
             try { return Results.Ok(await service.TestLocalAsync(cancellationToken)); }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
+
+        app.MapPost("/api/xiaomi-purifier/control", async (XiaomiControlRequest request, IXiaomiPurifierService service, CancellationToken cancellationToken) =>
+        {
+            try { return Results.Ok(await service.SetControlAsync(request, cancellationToken)); }
             catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
         });
 
