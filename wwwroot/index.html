@@ -23,6 +23,9 @@
                 <h1>OmniGate</h1>
             </div>
             <div class="header-actions" style="margin-left: auto; display: flex; gap: 0.5rem; align-items: center;">
+                <button class="btn btn-secondary btn-sm" id="btn-toggle-routines" style="flex: none;">
+                    ⚡ Routines
+                </button>
                 <button class="btn btn-secondary btn-sm" id="btn-toggle-hidden" style="flex: none;">
                     👁️ Hidden
                 </button>
@@ -70,7 +73,7 @@
             </section>
 
             <!-- 2. Tapo Matter Strip Card -->
-            <section class="glass-card span-two" id="tapo-card">
+            <section class="glass-card" id="tapo-card">
                 <div class="card-header">
                     <h2>Tapo Matter Power Strip</h2>
                     <button class="btn btn-icon-only" id="btn-refresh-tapo" title="Refresh States">
@@ -93,8 +96,157 @@
                 </div>
             </section>
 
+            <!-- 3. Dynamic Routine Builder -->
+            <section class="glass-card span-all routines-card" id="routines-panel" style="display: none;">
+                <div class="card-header routines-card-header">
+                    <div>
+                        <h2>Routines</h2>
+                        <p class="description">Combine Tapo outlets, SwitchBot, Wake on LAN, and time gaps into one POST webhook for iOS Shortcuts.</p>
+                    </div>
+                    <div class="routine-header-actions">
+                        <button class="btn btn-secondary btn-sm" id="btn-refresh-routines">↻ Refresh</button>
+                        <button class="btn btn-primary btn-sm" id="btn-new-routine">＋ New Routine</button>
+                    </div>
+                </div>
+                <div class="routines-layout">
+                    <aside class="routine-list-panel" aria-label="Saved routines">
+                        <div class="routine-list-header">
+                            <span>Saved routines</span>
+                            <span class="badge" id="routine-count">0</span>
+                        </div>
+                        <div id="routine-list" class="routine-list">
+                            <div class="empty-state"><p>No routines saved yet.</p><p class="subtext">Create one to get a copyable Shortcut webhook.</p></div>
+                        </div>
+                    </aside>
+                    <div class="routine-editor" id="routine-editor">
+                        <div class="empty-state routine-editor-empty">
+                            <p>Select a saved routine or create a new one.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
             <!-- Collapsible Settings & Shortcuts Container -->
             <div class="settings-container" id="settings-panel" style="display: none;">
+                <!-- ASUS Presence SSH Setup -->
+                <section class="glass-card span-all" id="presence-setup-card">
+                    <div class="card-header">
+                        <div>
+                            <h2>Home Presence</h2>
+                            <p class="description">OmniGate reads the main router's live AiMesh client list once per hour.</p>
+                        </div>
+                        <span class="badge" id="presence-state-badge">Unknown</span>
+                    </div>
+                    <div class="presence-status-panel">
+                        <div class="presence-summary">
+                            <div class="status-item">
+                                <span class="label">iPhone</span>
+                                <span class="value" id="presence-phone-state">Not checked</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="label">Last check</span>
+                                <span class="value presence-time" id="presence-last-check">Never</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="label">Next hourly check</span>
+                                <span class="value presence-time" id="presence-next-check">--</span>
+                            </div>
+                        </div>
+                        <div class="status-log-box" id="presence-message">Generate an SSH key to begin.</div>
+                        <div class="action-buttons">
+                            <button class="btn btn-secondary" id="btn-presence-check">Check only</button>
+                            <button class="btn btn-primary" id="btn-presence-check-apply">Check + control purifier now</button>
+                        </div>
+                        <p class="description presence-readonly-note">The second button immediately turns the purifier on when present or off when absent, independent of the hourly automation setting.</p>
+                    </div>
+                    <div class="presence-setup-grid">
+                        <form class="wizard-form" id="presence-settings-form" onsubmit="return false;">
+                            <div class="form-group">
+                                <label for="presence-router-host">Main router</label>
+                                <input type="text" id="presence-router-host" value="router.local" required>
+                            </div>
+                            <div class="presence-form-row">
+                                <div class="form-group">
+                                    <label for="presence-router-port">SSH port</label>
+                                    <input type="number" id="presence-router-port" value="22" min="1" max="65535" required>
+                                </div>
+                                <div class="form-group">
+                                    <label for="presence-router-user">ASUS user name</label>
+                                    <input type="text" id="presence-router-user" autocomplete="username" placeholder="Router admin user" required>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="presence-device-mac">iPhone private MAC</label>
+                                <input type="text" id="presence-device-mac" value="00:00:00:00:00:00" required>
+                            </div>
+                            <button type="submit" class="btn btn-secondary" id="btn-presence-save">Save settings</button>
+                        </form>
+
+                        <div class="presence-key-panel">
+                            <div class="card-header compact-header">
+                                <h3>SSH key</h3>
+                                <span class="badge" id="presence-key-badge">No key</span>
+                            </div>
+                            <p class="description">Generate the key here. The private half stays on this OmniGate machine.</p>
+                            <button class="btn btn-primary" id="btn-presence-generate-key">Generate SSH key</button>
+                            <div id="presence-public-key-wrap" style="display: none;">
+                                <label for="presence-public-key">Public key to add in Merlin</label>
+                                <textarea id="presence-public-key" class="public-key-box" readonly></textarea>
+                                <button class="btn btn-secondary btn-sm" id="btn-presence-copy-key">Copy public key</button>
+                            </div>
+                            <ol class="guide-list presence-key-guide">
+                                <li>In ASUS, open <strong>Administration → System</strong>.</li>
+                                <li>Paste the public key into <strong>Authorized Keys</strong> and apply.</li>
+                                <li>Return here, save the ASUS user name, then click <strong>Check now</strong>.</li>
+                            </ol>
+                        </div>
+                    </div>
+                    <div class="alert-box" id="presence-setup-feedback" style="display: none;"></div>
+                </section>
+
+                <!-- Xiaomi purifier local control setup -->
+                <section class="glass-card span-all" id="xiaomi-purifier-card">
+                    <div class="card-header">
+                        <div>
+                            <h2>Xiaomi Air Purifier</h2>
+                            <p class="description">Sign in once to save an encrypted local token. Regular control stays inside your home network.</p>
+                        </div>
+                        <span class="badge" id="xiaomi-state-badge">Not set up</span>
+                    </div>
+                    <div class="xiaomi-status-grid">
+                        <div class="status-item"><span class="label">Device</span><span class="value" id="xiaomi-device">Smart Air Purifier Elite</span></div>
+                        <div class="status-item"><span class="label">LAN connection</span><span class="value" id="xiaomi-local-state">Not tested</span></div>
+                        <div class="status-item"><span class="label">Power</span><span class="value" id="xiaomi-power-state">Unknown</span></div>
+                    </div>
+                    <div class="status-log-box" id="xiaomi-message">Start the one-time Xiaomi Home sign-in.</div>
+                    <div class="xiaomi-setup-grid">
+                        <div class="xiaomi-login-panel">
+                            <h3>One-time Xiaomi Home sign-in</h3>
+                            <p class="description">Click below, then scan the QR code with the Xiaomi Home app logged into your Malaysia account.</p>
+                            <button class="btn btn-primary" id="btn-xiaomi-login">Show QR code</button>
+                            <div class="xiaomi-qr-wrap" id="xiaomi-qr-wrap" style="display: none;">
+                                <img id="xiaomi-qr" alt="Xiaomi Home sign-in QR code">
+                                <p class="description">Scan this in Xiaomi Home. This panel updates automatically.</p>
+                            </div>
+                        </div>
+                        <div class="xiaomi-local-panel">
+                            <h3>Local control</h3>
+                            <p class="description">The test only reads the current power state. Automation remains off until it succeeds.</p>
+                            <button class="btn btn-secondary" id="btn-xiaomi-test">Test LAN connection</button>
+                            <div class="action-buttons">
+                                <button class="btn btn-primary" id="btn-xiaomi-on" disabled>Turn on</button>
+                                <button class="btn btn-secondary" id="btn-xiaomi-off" disabled>Turn off</button>
+                            </div>
+                            <label class="xiaomi-automation-toggle">
+                                <input type="checkbox" id="xiaomi-automation" disabled>
+                                <span>Follow the hourly iPhone presence check</span>
+                            </label>
+                            <p class="description">Connected at :00 turns it on; absent at :00 turns it off. Manual presence checks do not switch it.</p>
+                            <p class="description xiaomi-last-automation" id="xiaomi-last-automation">Last hourly action: none yet.</p>
+                        </div>
+                    </div>
+                </section>
+
                 <!-- 3. Bluetooth Scanner Card -->
                 <section class="glass-card" id="scanner-card">
                     <div class="card-header">
@@ -182,7 +334,7 @@
                                 <thead>
                                     <tr>
                                         <th>Device / Outlet</th>
-                                        <th>Trigger ON URL</th>
+                                        <th>ON / Run URL</th>
                                         <th>Trigger OFF URL</th>
                                         <th>Toggle State URL</th>
                                     </tr>
@@ -198,7 +350,7 @@
                             <ol class="guide-list">
                                 <li>Open the <strong>Shortcuts</strong> app on iOS and create a new Shortcut.</li>
                                 <li>Search for and add the <strong>Get Contents of URL</strong> action.</li>
-                                <li>Copy one of the green URLs above and paste it into the URL field. (The dashboard automatically replaces localhost with your server's current IP address).</li>
+                                <li>Copy one of the green URLs above and paste it into the URL field. Use OmniGate's LAN IP address (for example <code>192.168.1.10:5000</code>) instead of <code>localhost</code> so the iPhone can reach the server.</li>
                                 <li>Expand the action detail and set the Method to <strong>POST</strong>.</li>
                                 <li>Save and trigger the shortcut by saying <em>"Hey Siri, [Shortcut Name]"</em>!</li>
                             </ol>

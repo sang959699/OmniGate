@@ -2,6 +2,7 @@
 bin/
 obj/
 publish/
+publish-updated/
 publish-single/
 publish-selfcontained/
 
@@ -14,6 +15,15 @@ fabric.bin
 fabric.key
 names.json
 hidden.json
+routines.json
+asus-presence.json
+asus-presence-ed25519
+asus-presence-ed25519.pub
+asus-presence-known-hosts
+xiaomi-purifier.json
+xiaomi-purifier-token.dat
+xiaomi-qr/
+auth.json
 
 # IDE settings
 .vs/
@@ -22,5 +32,3 @@ hidden.json
 *.suo
 *.userossc
 *.sln.docstates
-
-

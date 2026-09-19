@@ -20,6 +20,7 @@ using System.Net.Sockets;
 using System.Diagnostics;
 using System.Globalization;
 using HarmonyLib;
+using MiHome.Net.Middleware;
 
 // MatterDotNet imports
 using MatterEndPoint = MatterDotNet.Entities.EndPoint;
@@ -86,6 +87,11 @@ class Program
         builder.Services.AddSingleton<ISwitchBotService, SwitchBotService>();
         builder.Services.AddSingleton<ITapoService, TapoService>();
         builder.Services.AddSingleton<IWakeOnLanService, WakeOnLanService>();
+        builder.Services.AddSingleton<IRoutineService, RoutineService>();
+        string xiaomiQrDirectory = LocalStatePath.Resolve(builder.Configuration, "Storage:XiaomiQrDirectory", "xiaomi-qr");
+        builder.Services.AddMiHomeDriver(options => options.QrCodeSavePath = xiaomiQrDirectory);
+        builder.Services.AddSingleton<IXiaomiPurifierService, XiaomiPurifierService>();
+        builder.Services.AddSingleton<IAsusPresenceService, AsusPresenceService>();
 
         // Set Binding Port
         string listenUrl = builder.Configuration["SwitchBot:ListenUrl"] ?? "http://0.0.0.0:5000";
@@ -100,11 +106,17 @@ class Program
         var switchBotService = app.Services.GetRequiredService<ISwitchBotService>();
         var tapoService = app.Services.GetRequiredService<ITapoService>();
         var nameService = app.Services.GetRequiredService<INameService>();
+        var routineService = app.Services.GetRequiredService<IRoutineService>();
+        var xiaomiPurifierService = app.Services.GetRequiredService<IXiaomiPurifierService>();
+        var asusPresenceService = app.Services.GetRequiredService<IAsusPresenceService>();
 
         // Start SwitchBot Queue Loop
         switchBotService.StartQueueProcessor();
         tapoService.StartSessionKeeper();
         app.Lifetime.ApplicationStopping.Register(tapoService.StopSessionKeeper);
+        app.Lifetime.ApplicationStopping.Register(routineService.Stop);
+        asusPresenceService.StartScheduler();
+        app.Lifetime.ApplicationStopping.Register(asusPresenceService.Stop);
 
         // ------------------ API ENDPOINTS ------------------
 
@@ -364,6 +376,161 @@ class Program
             {
                 return Results.BadRequest(new { error = ex.Message });
             }
+        });
+
+        // 14. Routines: persistent ordered combinations for iOS Shortcuts
+        app.MapGet("/api/routines", (IRoutineService service) =>
+        {
+            return Results.Ok(service.List());
+        });
+
+        app.MapGet("/api/routines/{idOrSlug}", (string idOrSlug, IRoutineService service) =>
+        {
+            var routine = service.Get(idOrSlug);
+            return routine == null
+                ? Results.NotFound(new { error = $"Routine '{idOrSlug}' was not found." })
+                : Results.Ok(routine);
+        });
+
+        app.MapPost("/api/routines", (RoutineUpsertRequest? request, IRoutineService service) =>
+        {
+            try
+            {
+                var routine = service.Create(request ?? new RoutineUpsertRequest());
+                return Results.Created($"/api/routines/{routine.Id}", routine);
+            }
+            catch (RoutineValidationException ex)
+            {
+                return Results.BadRequest(new { error = ex.Message });
+            }
+            catch (RoutineConflictException ex)
+            {
+                return Results.Conflict(new { error = ex.Message });
+            }
+        });
+
+        app.MapPut("/api/routines/{idOrSlug}", (string idOrSlug, RoutineUpsertRequest? request, IRoutineService service) =>
+        {
+            try
+            {
+                var routine = service.Update(idOrSlug, request ?? new RoutineUpsertRequest());
+                return routine == null
+                    ? Results.NotFound(new { error = $"Routine '{idOrSlug}' was not found." })
+                    : Results.Ok(routine);
+            }
+            catch (RoutineValidationException ex)
+            {
+                return Results.BadRequest(new { error = ex.Message });
+            }
+            catch (RoutineConflictException ex)
+            {
+                return Results.Conflict(new { error = ex.Message });
+            }
+        });
+
+        app.MapDelete("/api/routines/{idOrSlug}", (string idOrSlug, IRoutineService service) =>
+        {
+            try
+            {
+                return service.Delete(idOrSlug)
+                    ? Results.Ok(new { success = true })
+                    : Results.NotFound(new { error = $"Routine '{idOrSlug}' was not found." });
+            }
+            catch (RoutineConflictException ex)
+            {
+                return Results.Conflict(new { error = ex.Message });
+            }
+        });
+
+        app.MapPost("/api/routines/{idOrSlug}/run", (string idOrSlug, IRoutineService service) =>
+        {
+            try
+            {
+                var run = service.Start(idOrSlug);
+                return Results.Accepted($"/api/routine-runs/{run.RunId}", run);
+            }
+            catch (RoutineNotFoundException ex)
+            {
+                return Results.NotFound(new { error = ex.Message });
+            }
+            catch (RoutineConflictException ex)
+            {
+                return Results.Conflict(new { error = ex.Message });
+            }
+        });
+
+        app.MapGet("/api/routine-runs/{runId}", (string runId, IRoutineService service) =>
+        {
+            var run = service.GetRun(runId);
+            return run == null
+                ? Results.NotFound(new { error = $"Routine run '{runId}' was not found." })
+                : Results.Ok(run);
+        });
+
+        // 15. ASUS AiMesh iPhone presence (read-only; no device automation yet)
+        app.MapGet("/api/asus-presence", (IAsusPresenceService service) => Results.Ok(service.GetStatus()));
+
+        app.MapPost("/api/asus-presence/settings", (AsusPresenceSettingsRequest request, IAsusPresenceService service) =>
+        {
+            try { return Results.Ok(service.SaveSettings(request)); }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
+
+        app.MapPost("/api/asus-presence/key", async (AsusPresenceKeyRequest? request, IAsusPresenceService service, CancellationToken cancellationToken) =>
+        {
+            try { return Results.Ok(await service.GenerateKeyAsync(request?.Regenerate ?? false, cancellationToken)); }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
+
+        app.MapPost("/api/asus-presence/check", async (IAsusPresenceService service, CancellationToken cancellationToken) =>
+        {
+            try { return Results.Ok(await service.CheckNowAsync(cancellationToken)); }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
+
+        app.MapPost("/api/asus-presence/check-and-apply", async (IAsusPresenceService presenceService, IXiaomiPurifierService purifierService, CancellationToken cancellationToken) =>
+        {
+            try
+            {
+                var presence = await presenceService.CheckNowAsync(cancellationToken);
+                if (presence.State is not ("Connected" or "Not connected"))
+                    return Results.BadRequest(new { error = "Presence is unknown, so the purifier was not changed.", presence });
+
+                var purifier = await purifierService.SetPowerAsync(presence.State == "Connected", cancellationToken);
+                return Results.Ok(new { presence, purifier });
+            }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
+
+        // 16. Xiaomi purifier: one-time cloud token retrieval, then local-only control
+        app.MapGet("/api/xiaomi-purifier", (IXiaomiPurifierService service) => Results.Ok(service.GetStatus()));
+
+        app.MapPost("/api/xiaomi-purifier/login", (IXiaomiPurifierService service) => Results.Ok(service.StartLogin()));
+
+        app.MapGet("/api/xiaomi-purifier/qr", (IXiaomiPurifierService service) =>
+        {
+            return File.Exists(service.QrCodePath)
+                ? Results.File(service.QrCodePath, "image/png", enableRangeProcessing: false)
+                : Results.NotFound(new { error = "QR code is not ready yet." });
+        });
+
+        app.MapPost("/api/xiaomi-purifier/test", async (IXiaomiPurifierService service, CancellationToken cancellationToken) =>
+        {
+            try { return Results.Ok(await service.TestLocalAsync(cancellationToken)); }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
+
+        app.MapPost("/api/xiaomi-purifier/{action}", async (string action, IXiaomiPurifierService service, CancellationToken cancellationToken) =>
+        {
+            if (action is not ("on" or "off")) return Results.NotFound();
+            try { return Results.Ok(await service.SetPowerAsync(action == "on", cancellationToken)); }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
+
+        app.MapPost("/api/xiaomi-purifier/automation", (XiaomiAutomationRequest request, IXiaomiPurifierService service) =>
+        {
+            try { return Results.Ok(service.SetAutomation(request.Enabled)); }
+            catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
         });
 
         Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [Server] Starting HTTP REST API Server on {listenUrl}...");

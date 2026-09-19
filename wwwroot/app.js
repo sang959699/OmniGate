@@ -13,6 +13,41 @@ document.addEventListener("DOMContentLoaded", () => {
     const switchbotLog = document.getElementById("switchbot-log");
     const btnSwitchbotOn = document.getElementById("btn-switchbot-on");
     const btnSwitchbotOff = document.getElementById("btn-switchbot-off");
+
+    // ASUS presence elements
+    const presenceStateBadge = document.getElementById("presence-state-badge");
+    const presencePhoneState = document.getElementById("presence-phone-state");
+    const presenceLastCheck = document.getElementById("presence-last-check");
+    const presenceNextCheck = document.getElementById("presence-next-check");
+    const presenceMessage = document.getElementById("presence-message");
+    const btnPresenceCheck = document.getElementById("btn-presence-check");
+    const btnPresenceCheckApply = document.getElementById("btn-presence-check-apply");
+    const presenceSettingsForm = document.getElementById("presence-settings-form");
+    const presenceRouterHost = document.getElementById("presence-router-host");
+    const presenceRouterPort = document.getElementById("presence-router-port");
+    const presenceRouterUser = document.getElementById("presence-router-user");
+    const presenceDeviceMac = document.getElementById("presence-device-mac");
+    const presenceKeyBadge = document.getElementById("presence-key-badge");
+    const btnPresenceGenerateKey = document.getElementById("btn-presence-generate-key");
+    const presencePublicKeyWrap = document.getElementById("presence-public-key-wrap");
+    const presencePublicKey = document.getElementById("presence-public-key");
+    const btnPresenceCopyKey = document.getElementById("btn-presence-copy-key");
+    const presenceSetupFeedback = document.getElementById("presence-setup-feedback");
+
+    // Xiaomi purifier elements
+    const xiaomiStateBadge = document.getElementById("xiaomi-state-badge");
+    const xiaomiDevice = document.getElementById("xiaomi-device");
+    const xiaomiLocalState = document.getElementById("xiaomi-local-state");
+    const xiaomiPowerState = document.getElementById("xiaomi-power-state");
+    const xiaomiMessage = document.getElementById("xiaomi-message");
+    const btnXiaomiLogin = document.getElementById("btn-xiaomi-login");
+    const xiaomiQrWrap = document.getElementById("xiaomi-qr-wrap");
+    const xiaomiQr = document.getElementById("xiaomi-qr");
+    const btnXiaomiTest = document.getElementById("btn-xiaomi-test");
+    const btnXiaomiOn = document.getElementById("btn-xiaomi-on");
+    const btnXiaomiOff = document.getElementById("btn-xiaomi-off");
+    const xiaomiAutomation = document.getElementById("xiaomi-automation");
+    const xiaomiLastAutomation = document.getElementById("xiaomi-last-automation");
     
     // Tapo elements
     const btnRefreshTapo = document.getElementById("btn-refresh-tapo");
@@ -39,6 +74,22 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Local states
     let isScanning = false;
+    let tapoNodesCache = [];
+    let routines = [];
+    let currentRoutine = null;
+    let routineNotice = { message: "", className: "" };
+    let routinePollTimer = null;
+    let presenceKeyGenerated = false;
+    let xiaomiLoginPolling = null;
+
+    // Dynamic Routine Builder elements
+    const btnToggleRoutines = document.getElementById("btn-toggle-routines");
+    const routinesPanel = document.getElementById("routines-panel");
+    const btnRefreshRoutines = document.getElementById("btn-refresh-routines");
+    const btnNewRoutine = document.getElementById("btn-new-routine");
+    const routineList = document.getElementById("routine-list");
+    const routineCount = document.getElementById("routine-count");
+    const routineEditor = document.getElementById("routine-editor");
     
     // Hidden Outlets state
     const btnToggleHidden = document.getElementById("btn-toggle-hidden");
@@ -107,6 +158,222 @@ document.addEventListener("DOMContentLoaded", () => {
             return false;
         }
     }
+
+    // --- ASUS AIMESH IPHONE PRESENCE ---
+    const formatPresenceTime = (value, emptyText) => {
+        if (!value) return emptyText;
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return emptyText;
+        const now = new Date();
+        const sameDay = date.getFullYear() === now.getFullYear()
+            && date.getMonth() === now.getMonth()
+            && date.getDate() === now.getDate();
+        const time = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+        return sameDay
+            ? `Today, ${time}`
+            : `${date.toLocaleDateString([], { month: "short", day: "numeric" })}, ${time}`;
+    };
+
+    function showPresenceFeedback(message, type = "success") {
+        presenceSetupFeedback.style.display = "block";
+        presenceSetupFeedback.className = `alert-box ${type}`;
+        presenceSetupFeedback.textContent = message;
+    }
+
+    function renderPresenceStatus(data, populateForm = false) {
+        const state = data.state || "Unknown";
+        presenceStateBadge.textContent = state;
+        presenceStateBadge.className = "badge";
+        if (state === "Connected") presenceStateBadge.classList.add("success");
+        else if (state === "Not connected") presenceStateBadge.classList.add("warning");
+        else presenceStateBadge.classList.add("danger");
+
+        presencePhoneState.textContent = state;
+        presenceLastCheck.textContent = formatPresenceTime(data.lastCheckedAt, "Never");
+        presenceNextCheck.textContent = formatPresenceTime(data.nextCheckAt, "--");
+        presenceMessage.textContent = data.message || "No presence information is available.";
+
+        presenceKeyGenerated = data.keyGenerated === true;
+        presenceKeyBadge.textContent = presenceKeyGenerated ? "Key ready" : "No key";
+        presenceKeyBadge.className = `badge ${presenceKeyGenerated ? "success" : "warning"}`;
+        btnPresenceGenerateKey.textContent = presenceKeyGenerated ? "Regenerate SSH key" : "Generate SSH key";
+
+        if (data.publicKey) {
+            presencePublicKey.value = data.publicKey;
+            presencePublicKeyWrap.style.display = "block";
+        } else {
+            presencePublicKey.value = "";
+            presencePublicKeyWrap.style.display = "none";
+        }
+
+        if (populateForm) {
+            presenceRouterHost.value = data.routerHost || "router.local";
+            presenceRouterPort.value = data.port || 22;
+            presenceRouterUser.value = data.userName || "";
+            presenceDeviceMac.value = data.deviceMac || "00:00:00:00:00:00";
+        }
+    }
+
+    async function loadPresenceStatus(populateForm = false) {
+        try {
+            renderPresenceStatus(await apiRequest("/api/asus-presence"), populateForm);
+        } catch (error) {
+            presenceStateBadge.textContent = "Unavailable";
+            presenceStateBadge.className = "badge danger";
+            presenceMessage.textContent = `Could not load presence status: ${error.message}`;
+        }
+    }
+
+    async function savePresenceSettings(showFeedback = true) {
+        const data = await apiRequest("/api/asus-presence/settings", "POST", {
+            routerHost: presenceRouterHost.value.trim(),
+            port: Number(presenceRouterPort.value),
+            userName: presenceRouterUser.value.trim(),
+            deviceMac: presenceDeviceMac.value.trim()
+        });
+        renderPresenceStatus(data, true);
+        if (showFeedback) showPresenceFeedback("ASUS presence settings saved.");
+        return data;
+    }
+
+    presenceSettingsForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const button = document.getElementById("btn-presence-save");
+        button.disabled = true;
+        try { await savePresenceSettings(); }
+        catch (error) { showPresenceFeedback(error.message, "danger"); }
+        finally { button.disabled = false; }
+    });
+
+    btnPresenceGenerateKey.addEventListener("click", async () => {
+        const regenerate = presenceKeyGenerated;
+        if (regenerate && !confirm("Generate a replacement key? The old public key in Merlin will stop working after you replace it.")) return;
+
+        btnPresenceGenerateKey.disabled = true;
+        try {
+            const data = await apiRequest("/api/asus-presence/key", "POST", { regenerate });
+            renderPresenceStatus(data);
+            showPresenceFeedback("SSH key generated. Copy the public key into Merlin Authorized Keys.");
+        } catch (error) {
+            showPresenceFeedback(error.message, "danger");
+        } finally {
+            btnPresenceGenerateKey.disabled = false;
+        }
+    });
+
+    btnPresenceCopyKey.addEventListener("click", async () => {
+        const copied = await copyToClipboard(presencePublicKey.value);
+        showPresenceFeedback(copied ? "Public key copied." : "Could not copy the public key.", copied ? "success" : "danger");
+    });
+
+    btnPresenceCheck.addEventListener("click", async () => {
+        btnPresenceCheck.disabled = true;
+        presenceMessage.textContent = "Checking the ASUS live client list…";
+        try {
+            await savePresenceSettings(false);
+            renderPresenceStatus(await apiRequest("/api/asus-presence/check", "POST"));
+        } catch (error) {
+            presenceMessage.textContent = `Check failed: ${error.message}`;
+            showPresenceFeedback(error.message, "danger");
+        } finally {
+            btnPresenceCheck.disabled = false;
+        }
+    });
+
+    btnPresenceCheckApply.addEventListener("click", async () => {
+        btnPresenceCheckApply.disabled = true;
+        btnPresenceCheck.disabled = true;
+        presenceMessage.textContent = "Checking presence and applying it to the purifier…";
+        try {
+            await savePresenceSettings(false);
+            const result = await apiRequest("/api/asus-presence/check-and-apply", "POST");
+            renderPresenceStatus(result.presence);
+            renderXiaomiStatus(result.purifier);
+            showPresenceFeedback(result.presence.state === "Connected"
+                ? "iPhone connected — purifier turned on."
+                : "iPhone absent — purifier turned off.");
+        } catch (error) {
+            presenceMessage.textContent = `Test failed: ${error.message}`;
+            showPresenceFeedback(error.message, "danger");
+            await loadPresenceStatus(false);
+            await loadXiaomiStatus();
+        } finally {
+            btnPresenceCheckApply.disabled = false;
+            btnPresenceCheck.disabled = false;
+        }
+    });
+
+    loadPresenceStatus(true);
+    setInterval(() => loadPresenceStatus(false), 30000);
+
+    // --- XIAOMI PURIFIER: ONE-TIME LOGIN, THEN LOCAL CONTROL ---
+    function renderXiaomiStatus(data) {
+        xiaomiDevice.textContent = `${data.deviceName || "Smart Air Purifier Elite"} · ${data.ipAddress || "192.168.1.106"}`;
+        xiaomiLocalState.textContent = data.localValidated ? "Working" : (data.tokenStored ? "Ready to test" : "No token");
+        xiaomiPowerState.textContent = data.power === true ? "On" : data.power === false ? "Off" : "Unknown";
+        xiaomiMessage.textContent = data.message || "No Xiaomi status is available.";
+
+        const ready = data.localValidated === true;
+        xiaomiStateBadge.textContent = ready ? "Local ready" : data.loginRunning ? "Waiting for scan" : data.tokenStored ? "Token ready" : "Not set up";
+        xiaomiStateBadge.className = `badge ${ready ? "success" : data.loginRunning ? "warning" : data.tokenStored ? "warning" : "danger"}`;
+        btnXiaomiLogin.disabled = data.loginRunning === true;
+        btnXiaomiLogin.textContent = data.loginRunning ? "Waiting for scan…" : data.tokenStored ? "Sign in again" : "Show QR code";
+        btnXiaomiTest.disabled = !data.tokenStored || data.loginRunning;
+        btnXiaomiOn.disabled = !ready;
+        btnXiaomiOff.disabled = !ready;
+        xiaomiAutomation.disabled = !ready;
+        xiaomiAutomation.checked = data.automationEnabled === true;
+        xiaomiLastAutomation.textContent = data.lastAutomationAt
+            ? `Last hourly action: ${formatPresenceTime(data.lastAutomationAt, "")}. ${data.lastAutomationResult || ""}`
+            : "Last hourly action: none yet.";
+
+        xiaomiQrWrap.style.display = data.qrReady ? "block" : "none";
+        if (data.qrReady) xiaomiQr.src = `/api/xiaomi-purifier/qr?t=${Date.now()}`;
+        if (!data.loginRunning && xiaomiLoginPolling) {
+            clearInterval(xiaomiLoginPolling);
+            xiaomiLoginPolling = null;
+        }
+    }
+
+    async function loadXiaomiStatus() {
+        try { renderXiaomiStatus(await apiRequest("/api/xiaomi-purifier")); }
+        catch (error) { xiaomiMessage.textContent = `Could not load purifier status: ${error.message}`; }
+    }
+
+    btnXiaomiLogin.addEventListener("click", async () => {
+        btnXiaomiLogin.disabled = true;
+        try {
+            renderXiaomiStatus(await apiRequest("/api/xiaomi-purifier/login", "POST"));
+            if (!xiaomiLoginPolling) xiaomiLoginPolling = setInterval(loadXiaomiStatus, 1200);
+        } catch (error) { xiaomiMessage.textContent = error.message; btnXiaomiLogin.disabled = false; }
+    });
+
+    btnXiaomiTest.addEventListener("click", async () => {
+        btnXiaomiTest.disabled = true;
+        xiaomiMessage.textContent = "Testing direct LAN connection…";
+        try { renderXiaomiStatus(await apiRequest("/api/xiaomi-purifier/test", "POST")); }
+        catch (error) { xiaomiMessage.textContent = error.message; }
+        finally { btnXiaomiTest.disabled = false; }
+    });
+
+    async function setXiaomiPower(power) {
+        const button = power ? btnXiaomiOn : btnXiaomiOff;
+        button.disabled = true;
+        try { renderXiaomiStatus(await apiRequest(`/api/xiaomi-purifier/${power ? "on" : "off"}`, "POST")); }
+        catch (error) { xiaomiMessage.textContent = error.message; }
+        finally { button.disabled = false; }
+    }
+    btnXiaomiOn.addEventListener("click", () => setXiaomiPower(true));
+    btnXiaomiOff.addEventListener("click", () => setXiaomiPower(false));
+
+    xiaomiAutomation.addEventListener("change", async () => {
+        xiaomiAutomation.disabled = true;
+        try { renderXiaomiStatus(await apiRequest("/api/xiaomi-purifier/automation", "POST", { enabled: xiaomiAutomation.checked })); }
+        catch (error) { xiaomiMessage.textContent = error.message; await loadXiaomiStatus(); }
+    });
+
+    loadXiaomiStatus();
+    setInterval(loadXiaomiStatus, 30000);
 
     // --- SWITCHBOT CONTROLLER ---
     async function updateSwitchBotStatus() {
@@ -207,6 +474,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 apiRequest("/api/tapo/list"),
                 apiRequest("/api/tapo/hidden")
             ]);
+            tapoNodesCache = Array.isArray(data) ? data : [];
             hiddenOutlets = hiddenList;
             tapoNodesContainer.innerHTML = "";
             
@@ -217,6 +485,8 @@ document.addEventListener("DOMContentLoaded", () => {
                         <p class="subtext">Pair a new device using the commissioning panel below.</p>
                     </div>
                 `;
+                renderShortcutsMatrix(tapoNodesCache);
+                renderRoutineEditor();
                 return;
             }
 
@@ -369,6 +639,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
             // Render shortcuts matrix
             renderShortcutsMatrix(data);
+            // Refresh routine outlet selectors once the live Tapo inventory is available.
+            renderRoutineEditor();
 
         } catch (error) {
             renderShortcutsMatrix([]);
@@ -384,7 +656,472 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     btnRefreshTapo.addEventListener("click", loadTapoNodes);
+
+    // --- DYNAMIC ROUTINE BUILDER ---
+    const escapeHtml = (value) => String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+
+    const cloneRoutine = (routine) => JSON.parse(JSON.stringify(routine));
+
+    function slugifyRoutine(value) {
+        return String(value || "")
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-+|-+$/g, "")
+            .slice(0, 80)
+            .replace(/-+$/g, "");
+    }
+
+    function publicApiBase() {
+        if (window.location.origin && window.location.origin !== "null") return window.location.origin;
+        return `http://${window.location.host || "localhost:5000"}`;
+    }
+
+    function getTapoTargets() {
+        const targets = [];
+        tapoNodesCache.forEach(node => {
+            (node.endpoints || []).forEach(ep => {
+                targets.push({
+                    nodeId: String(node.nodeId),
+                    endpointId: Number(ep.endpointId),
+                    label: `${node.customName || `Tapo ${node.nodeId}`} · ${ep.customName || `Outlet ${ep.endpointId}`}`
+                });
+            });
+        });
+        return targets;
+    }
+
+    function createDefaultRoutine() {
+        const firstTapo = getTapoTargets()[0];
+        return {
+            id: null,
+            name: "New routine",
+            slug: "",
+            stopOnError: true,
+            preventDuplicateRuns: true,
+            estimatedDelaySeconds: 0,
+            steps: [firstTapo
+                ? { type: "tapo", action: "on", nodeId: firstTapo.nodeId, endpointId: firstTapo.endpointId }
+                : { type: "switchbot", action: "on" }]
+        };
+    }
+
+    function routineStepTypeOptions(selected) {
+        return [
+            ["tapo", "Tapo outlet"],
+            ["switchbot", "SwitchBot"],
+            ["wol", "Wake on LAN"]
+        ].map(([value, label]) => `<option value="${value}" ${selected === value ? "selected" : ""}>${label}</option>`).join("");
+    }
+
+    function routineTargetMarkup(step, index) {
+        if (step.type === "tapo") {
+            const selected = `${step.nodeId || ""}|${step.endpointId || ""}`;
+            const options = getTapoTargets().map(target => {
+                const value = `${target.nodeId}|${target.endpointId}`;
+                return `<option value="${escapeHtml(value)}" ${value === selected ? "selected" : ""}>${escapeHtml(target.label)}</option>`;
+            }).join("");
+            return `
+                <div class="form-group routine-target">
+                    <label for="routine-target-${index}">Outlet</label>
+                    <select id="routine-target-${index}" aria-label="Routine outlet" data-step-index="${index}" data-step-field="target">
+                        ${options || `<option value="">No Tapo outlets discovered</option>`}
+                    </select>
+                </div>`;
+        }
+
+        const label = step.type === "wol" ? "Configured PC target" : "Configured SwitchBot Bot";
+        return `
+            <div class="form-group routine-target">
+                <label for="routine-target-${index}">Target</label>
+                <input id="routine-target-${index}" value="${label}" disabled>
+            </div>`;
+    }
+
+    function routineActionMarkup(step, index) {
+        if (step.type === "wol") {
+            return `
+                <div class="form-group routine-action">
+                    <label for="routine-action-${index}">Action</label>
+                    <select id="routine-action-${index}" aria-label="Routine action" disabled><option>Wake</option></select>
+                </div>`;
+        }
+
+        return `
+            <div class="form-group routine-action">
+                <label for="routine-action-${index}">Action</label>
+                <select id="routine-action-${index}" aria-label="Routine action" data-step-index="${index}" data-step-field="action">
+                    <option value="on" ${step.action === "on" ? "selected" : ""}>Turn on</option>
+                    <option value="off" ${step.action === "off" ? "selected" : ""}>Turn off</option>
+                </select>
+            </div>`;
+    }
+
+    function routineStepActions(index, count) {
+        return `
+            <div class="routine-step-actions">
+                <button class="routine-icon-button" type="button" data-routine-move="up" data-step-index="${index}" aria-label="Move step up" ${index === 0 ? "disabled" : ""}>↑</button>
+                <button class="routine-icon-button" type="button" data-routine-move="down" data-step-index="${index}" aria-label="Move step down" ${index === count - 1 ? "disabled" : ""}>↓</button>
+                <button class="routine-icon-button routine-remove-button" type="button" data-routine-remove="true" data-step-index="${index}" aria-label="Remove step">×</button>
+            </div>`;
+    }
+
+    function renderRoutineList() {
+        routineCount.textContent = String(routines.length);
+        if (routines.length === 0) {
+            routineList.innerHTML = `<div class="empty-state"><p>No routines saved yet.</p><p class="subtext">Create one to get a copyable Shortcut webhook.</p></div>`;
+            return;
+        }
+
+        routineList.innerHTML = routines.map(routine => {
+            const delay = Number(routine.estimatedDelaySeconds || 0);
+            const detail = `${(routine.steps || []).length} step${(routine.steps || []).length === 1 ? "" : "s"}${delay ? ` · ${delay}s wait` : ""}`;
+            return `<button class="routine-list-item ${currentRoutine && currentRoutine.id === routine.id ? "active" : ""}" type="button" data-routine-id="${escapeHtml(routine.id)}">
+                <strong>${escapeHtml(routine.name)}</strong><span>${escapeHtml(detail)}</span>
+            </button>`;
+        }).join("");
+
+        routineList.querySelectorAll("[data-routine-id]").forEach(button => {
+            button.addEventListener("click", () => {
+                const selected = routines.find(routine => routine.id === button.dataset.routineId);
+                if (!selected) return;
+                routineNotice = { message: "", className: "" };
+                currentRoutine = cloneRoutine(selected);
+                renderRoutineList();
+                renderRoutineEditor();
+            });
+        });
+    }
+
+    function renderRoutineEditor() {
+        if (!currentRoutine) {
+            routineEditor.innerHTML = `<div class="empty-state routine-editor-empty"><p>Select a saved routine or create a new one.</p></div>`;
+            return;
+        }
+
+        currentRoutine.steps = Array.isArray(currentRoutine.steps) ? currentRoutine.steps : [];
+        const previewSlug = currentRoutine.slug || slugifyRoutine(currentRoutine.name) || "new-routine";
+        const apiPath = `/api/routines/${previewSlug}/run`;
+        const apiUrl = `${publicApiBase()}${apiPath}`;
+        const estimatedDelay = currentRoutine.steps
+            .filter(step => step.type === "delay")
+            .reduce((total, step) => total + (Number(step.seconds) || 0), 0);
+
+        const stepsHtml = currentRoutine.steps.map((step, index) => {
+            if (step.type === "delay") {
+                return `<div class="routine-step routine-step-delay" data-step-index="${index}">
+                    <div class="routine-step-number">${index + 1}</div>
+                    <div class="form-group routine-delay-control">
+                        <label for="routine-delay-${index}">Time gap</label>
+                        <input id="routine-delay-${index}" aria-label="Time gap in seconds" type="number" min="1" max="3600" value="${escapeHtml(step.seconds || 1)}" data-step-index="${index}" data-step-field="seconds">
+                        <span>seconds</span>
+                    </div>
+                    <span class="routine-step-note">Pause before the next action</span>
+                    ${routineStepActions(index, currentRoutine.steps.length)}
+                </div>`;
+            }
+
+            return `<div class="routine-step" data-step-index="${index}">
+                <div class="routine-step-number">${index + 1}</div>
+                <div class="form-group routine-device-type">
+                    <label for="routine-type-${index}">Device</label>
+                    <select id="routine-type-${index}" aria-label="Routine device type" data-step-index="${index}" data-step-field="type">${routineStepTypeOptions(step.type)}</select>
+                </div>
+                ${routineTargetMarkup(step, index)}
+                ${routineActionMarkup(step, index)}
+                ${routineStepActions(index, currentRoutine.steps.length)}
+            </div>`;
+        }).join("");
+
+        routineEditor.innerHTML = `
+            <div class="routine-editor-header">
+                <div><h3>${currentRoutine.id ? "Edit routine" : "New routine"}</h3><p>Actions run from top to bottom.</p></div>
+                <div class="routine-editor-actions">
+                    <button class="btn btn-secondary btn-sm" type="button" id="btn-run-routine" ${currentRoutine.id ? "" : "disabled"}>▶ Run now</button>
+                    <button class="btn btn-primary btn-sm" type="submit" form="routine-form">Save routine</button>
+                </div>
+            </div>
+            <form id="routine-form" onsubmit="return false;">
+                <div class="routine-field-row">
+                    <div class="form-group"><label for="routine-name-input">Routine name</label><input id="routine-name-input" name="routine-name" value="${escapeHtml(currentRoutine.name)}" maxlength="80" required></div>
+                    <div class="form-group"><label for="routine-slug-input">iOS Shortcut API name</label><input id="routine-slug-input" class="routine-slug-input" value="${escapeHtml(previewSlug)}" readonly></div>
+                </div>
+                <div class="form-group">
+                    <label>Generated POST URL</label>
+                    <div class="routine-api-row"><code id="routine-api-url">${escapeHtml(apiUrl)}</code><button class="btn btn-secondary btn-sm" type="button" id="btn-copy-routine-api">Copy URL</button></div>
+                </div>
+                <p class="routine-api-note">Paste this URL into iOS Shortcuts → Get Contents of URL. No request body is required. Use OmniGate's LAN address instead of <code>localhost</code> when the Shortcut runs on your iPhone.</p>
+
+                <div class="routine-section-heading"><h4>Sequence</h4><span>Move steps with ↑ ↓</span></div>
+                <div class="routine-steps" id="routine-steps">${stepsHtml || `<div class="empty-state"><p>Add an action or time gap to begin.</p></div>`}</div>
+                <div class="routine-add-actions">
+                    <button class="btn btn-secondary btn-sm" type="button" id="btn-add-routine-action">＋ Add device action</button>
+                    <button class="btn btn-secondary btn-sm" type="button" id="btn-add-routine-delay">＋ Add time gap</button>
+                </div>
+
+                <div class="routine-options">
+                    <label class="form-check"><input class="form-check-input" type="checkbox" id="routine-stop-on-error" ${currentRoutine.stopOnError !== false ? "checked" : ""}><span class="form-check-label">Stop if an action fails</span></label>
+                    <label class="form-check"><input class="form-check-input" type="checkbox" id="routine-prevent-duplicate" ${currentRoutine.preventDuplicateRuns !== false ? "checked" : ""}><span class="form-check-label">Prevent duplicate runs</span></label>
+                    <span class="routine-estimate">Estimated wait: <strong>${estimatedDelay} second${estimatedDelay === 1 ? "" : "s"}</strong></span>
+                </div>
+                <div class="routine-form-actions">
+                    <div class="routine-primary-actions">
+                        <button class="btn btn-primary" type="submit">Save routine</button>
+                        <button class="btn btn-secondary" type="button" id="btn-run-routine-bottom" ${currentRoutine.id ? "" : "disabled"}>▶ Run now</button>
+                    </div>
+                    <button class="btn btn-secondary btn-sm" type="button" id="btn-delete-routine" ${currentRoutine.id ? "" : "disabled"}>Delete</button>
+                </div>
+                <div class="routine-status ${escapeHtml(routineNotice.className)}" id="routine-status" aria-live="polite">${escapeHtml(routineNotice.message)}</div>
+                <div class="routine-run-progress" id="routine-run-progress" style="display:none;" aria-live="polite"></div>
+            </form>`;
+
+        const nameInput = document.getElementById("routine-name-input");
+        nameInput.addEventListener("input", () => {
+            currentRoutine.name = nameInput.value;
+            const slugPreview = document.getElementById("routine-slug-input");
+            if (!currentRoutine.id) {
+                const slug = slugifyRoutine(nameInput.value) || "new-routine";
+                slugPreview.value = slug;
+                document.getElementById("routine-api-url").textContent = `${publicApiBase()}/api/routines/${slug}/run`;
+            }
+        });
+
+        routineEditor.querySelectorAll("[data-step-field]").forEach(control => {
+            control.addEventListener("change", () => updateRoutineStep(control));
+            if (control.dataset.stepField === "seconds") control.addEventListener("input", () => updateRoutineStep(control, false));
+        });
+
+        routineEditor.querySelectorAll("[data-routine-move]").forEach(button => {
+            button.addEventListener("click", () => moveRoutineStep(Number(button.dataset.stepIndex), button.dataset.routineMove));
+        });
+        routineEditor.querySelectorAll("[data-routine-remove]").forEach(button => {
+            button.addEventListener("click", () => {
+                currentRoutine.steps.splice(Number(button.dataset.stepIndex), 1);
+                routineNotice = { message: "", className: "" };
+                renderRoutineEditor();
+            });
+        });
+
+        document.getElementById("btn-add-routine-action").addEventListener("click", () => {
+            currentRoutine.steps.push(createDefaultRoutine().steps[0]);
+            renderRoutineEditor();
+        });
+        document.getElementById("btn-add-routine-delay").addEventListener("click", () => {
+            currentRoutine.steps.push({ type: "delay", seconds: 1 });
+            renderRoutineEditor();
+        });
+        document.getElementById("routine-form").addEventListener("submit", saveCurrentRoutine);
+        document.getElementById("btn-run-routine").addEventListener("click", runCurrentRoutine);
+        document.getElementById("btn-run-routine-bottom").addEventListener("click", runCurrentRoutine);
+        document.getElementById("btn-delete-routine").addEventListener("click", deleteCurrentRoutine);
+        document.getElementById("btn-copy-routine-api").addEventListener("click", async () => {
+            const copied = await copyToClipboard(document.getElementById("routine-api-url").textContent);
+            setRoutineNotice(copied ? "Shortcut URL copied to clipboard." : "Could not copy the URL.", copied ? "success" : "danger");
+        });
+
+        document.getElementById("routine-stop-on-error").addEventListener("change", e => { currentRoutine.stopOnError = e.target.checked; });
+        document.getElementById("routine-prevent-duplicate").addEventListener("change", e => { currentRoutine.preventDuplicateRuns = e.target.checked; });
+    }
+
+    function updateRoutineStep(control, rerender = true) {
+        if (!currentRoutine) return;
+        const index = Number(control.dataset.stepIndex);
+        const step = currentRoutine.steps[index];
+        if (!step) return;
+
+        if (control.dataset.stepField === "type") {
+            const type = control.value;
+            if (type === "tapo") {
+                const first = getTapoTargets()[0];
+                currentRoutine.steps[index] = first
+                    ? { type, action: "on", nodeId: first.nodeId, endpointId: first.endpointId }
+                    : { type, action: "on", nodeId: "", endpointId: null };
+            } else if (type === "wol") {
+                currentRoutine.steps[index] = { type, action: "wake" };
+            } else {
+                currentRoutine.steps[index] = { type: "switchbot", action: "on" };
+            }
+            renderRoutineEditor();
+            return;
+        }
+
+        if (control.dataset.stepField === "target") {
+            const [nodeId, endpointId] = control.value.split("|");
+            step.nodeId = nodeId || "";
+            step.endpointId = endpointId ? Number(endpointId) : null;
+        } else if (control.dataset.stepField === "seconds") {
+            step.seconds = Math.max(1, Math.min(3600, Number(control.value) || 1));
+            control.value = step.seconds;
+            const estimated = currentRoutine.steps
+                .filter(item => item.type === "delay")
+                .reduce((total, item) => total + (Number(item.seconds) || 0), 0);
+            const estimateLabel = routineEditor.querySelector(".routine-estimate strong");
+            if (estimateLabel) estimateLabel.textContent = `${estimated} second${estimated === 1 ? "" : "s"}`;
+        } else if (control.dataset.stepField === "action") {
+            step.action = control.value;
+        }
+
+        if (rerender && control.dataset.stepField !== "seconds") renderRoutineEditor();
+    }
+
+    function moveRoutineStep(index, direction) {
+        const targetIndex = direction === "up" ? index - 1 : index + 1;
+        if (!currentRoutine || targetIndex < 0 || targetIndex >= currentRoutine.steps.length) return;
+        const [step] = currentRoutine.steps.splice(index, 1);
+        currentRoutine.steps.splice(targetIndex, 0, step);
+        renderRoutineEditor();
+    }
+
+    function setRoutineNotice(message, className = "") {
+        routineNotice = { message, className };
+        const status = document.getElementById("routine-status");
+        if (status) {
+            status.textContent = message;
+            status.className = `routine-status ${className}`;
+        }
+    }
+
+    function routinePayloadFromCurrent() {
+        return {
+            name: currentRoutine.name,
+            stopOnError: currentRoutine.stopOnError !== false,
+            preventDuplicateRuns: currentRoutine.preventDuplicateRuns !== false,
+            steps: currentRoutine.steps.map(step => ({
+                type: step.type,
+                action: step.type === "delay" ? null : step.action,
+                nodeId: step.type === "tapo" ? step.nodeId : null,
+                endpointId: step.type === "tapo" ? step.endpointId : null,
+                seconds: step.type === "delay" ? Number(step.seconds) : null,
+                macAddress: step.type === "wol" ? (step.macAddress || null) : null,
+                broadcastIp: step.type === "wol" ? (step.broadcastIp || null) : null,
+                port: step.type === "wol" ? (step.port || null) : null
+            }))
+        };
+    }
+
+    async function saveCurrentRoutine(event) {
+        if (event) event.preventDefault();
+        if (!currentRoutine) return;
+        currentRoutine.name = document.getElementById("routine-name-input").value.trim();
+        currentRoutine.stopOnError = document.getElementById("routine-stop-on-error").checked;
+        currentRoutine.preventDuplicateRuns = document.getElementById("routine-prevent-duplicate").checked;
+        if (!currentRoutine.name) {
+            setRoutineNotice("Routine name is required.", "danger");
+            return;
+        }
+        if (!currentRoutine.steps.length) {
+            setRoutineNotice("Add at least one action or time gap.", "danger");
+            return;
+        }
+
+        try {
+            const method = currentRoutine.id ? "PUT" : "POST";
+            const endpoint = currentRoutine.id ? `/api/routines/${encodeURIComponent(currentRoutine.id)}` : "/api/routines";
+            const saved = await apiRequest(endpoint, method, routinePayloadFromCurrent());
+            const index = routines.findIndex(routine => routine.id === saved.id);
+            if (index >= 0) routines[index] = saved;
+            else routines.push(saved);
+            currentRoutine = cloneRoutine(saved);
+            routineNotice = { message: "Routine saved. The POST URL is ready for iOS Shortcuts.", className: "success" };
+            renderRoutineList();
+            renderRoutineEditor();
+            renderShortcutsMatrix(tapoNodesCache);
+        } catch (error) {
+            setRoutineNotice(`Could not save routine: ${error.message}`, "danger");
+        }
+    }
+
+    async function runCurrentRoutine() {
+        if (!currentRoutine || !currentRoutine.id) {
+            setRoutineNotice("Save the routine before running it.", "danger");
+            return;
+        }
+        try {
+            const result = await apiRequest(`/api/routines/${encodeURIComponent(currentRoutine.id)}/run`, "POST");
+            setRoutineNotice(`Routine accepted. Run ID: ${result.runId}`, "success");
+            pollRoutineRun(result.runId);
+        } catch (error) {
+            setRoutineNotice(`Could not run routine: ${error.message}`, "danger");
+        }
+    }
+
+    async function pollRoutineRun(runId) {
+        if (routinePollTimer) window.clearTimeout(routinePollTimer);
+        try {
+            const run = await apiRequest(`/api/routine-runs/${encodeURIComponent(runId)}`);
+            const progress = document.getElementById("routine-run-progress");
+            if (progress) {
+                progress.style.display = "block";
+                const stepText = run.totalSteps ? `Step ${Math.min(run.currentStep || 0, run.totalSteps)} of ${run.totalSteps}` : "Preparing";
+                progress.innerHTML = `<strong>${escapeHtml(run.status)}</strong> · ${escapeHtml(stepText)}${run.error ? ` · ${escapeHtml(run.error)}` : ""}`;
+            }
+
+            if (["Completed", "CompletedWithErrors", "Failed", "Cancelled"].includes(run.status)) {
+                const className = run.status === "Completed" ? "success" : "danger";
+                setRoutineNotice(`Run ${run.status.toLowerCase()}.`, className);
+                return;
+            }
+
+            routinePollTimer = window.setTimeout(() => pollRoutineRun(runId), 900);
+        } catch (error) {
+            setRoutineNotice(`Run status unavailable: ${error.message}`, "danger");
+        }
+    }
+
+    async function deleteCurrentRoutine() {
+        if (!currentRoutine || !currentRoutine.id || !confirm(`Delete routine “${currentRoutine.name}”?`)) return;
+        try {
+            await apiRequest(`/api/routines/${encodeURIComponent(currentRoutine.id)}`, "DELETE");
+            routines = routines.filter(routine => routine.id !== currentRoutine.id);
+            currentRoutine = routines.length ? cloneRoutine(routines[0]) : null;
+            routineNotice = { message: "", className: "" };
+            renderRoutineList();
+            renderRoutineEditor();
+            renderShortcutsMatrix(tapoNodesCache);
+        } catch (error) {
+            setRoutineNotice(`Could not delete routine: ${error.message}`, "danger");
+        }
+    }
+
+    async function loadRoutines() {
+        try {
+            const data = await apiRequest("/api/routines");
+            routines = Array.isArray(data) ? data : [];
+            if (currentRoutine && currentRoutine.id) {
+                const refreshed = routines.find(routine => routine.id === currentRoutine.id);
+                if (refreshed) currentRoutine = cloneRoutine(refreshed);
+            } else if (!currentRoutine && routines.length) {
+                currentRoutine = cloneRoutine(routines[0]);
+            }
+            renderRoutineList();
+            renderRoutineEditor();
+            renderShortcutsMatrix(tapoNodesCache);
+        } catch (error) {
+            routineList.innerHTML = `<div class="alert-box danger">Could not load routines: ${escapeHtml(error.message)}</div>`;
+        }
+    }
+
+    btnToggleRoutines.addEventListener("click", () => {
+        const isHidden = routinesPanel.style.display === "none";
+        routinesPanel.style.display = isHidden ? "block" : "none";
+        btnToggleRoutines.classList.toggle("btn-primary", isHidden);
+        btnToggleRoutines.classList.toggle("btn-secondary", !isHidden);
+        if (isHidden) loadRoutines();
+    });
+    btnRefreshRoutines.addEventListener("click", loadRoutines);
+    btnNewRoutine.addEventListener("click", () => {
+        routineNotice = { message: "", className: "" };
+        currentRoutine = createDefaultRoutine();
+        renderRoutineList();
+        renderRoutineEditor();
+    });
+
     loadTapoNodes(); // Initial trigger
+    loadRoutines();
 
     // --- SETUP PANEL TOGGLE ---
     const btnToggleSettings = document.getElementById("btn-toggle-settings");
@@ -576,7 +1313,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // --- IOS SHORTCUTS ASSISTANT MATRIX RENDER ---
     function renderShortcutsMatrix(tapoNodes) {
         const tableBody = document.getElementById("shortcuts-table-body");
-        const serverAddress = window.location.host || "localhost:5000";
+        const baseUrl = publicApiBase();
         
         let html = "";
         
@@ -584,8 +1321,8 @@ document.addEventListener("DOMContentLoaded", () => {
         html += `
             <tr>
                 <td data-label="Device / Outlet"><strong>SwitchBot Bot</strong><br><span style="font-size:0.75rem; color:var(--text-muted);">Direct BLE Control</span></td>
-                <td data-label="Trigger ON URL"><span class="shortcut-url-code" title="Click to copy">http://${serverAddress}/api/switchbot/on</span></td>
-                <td data-label="Trigger OFF URL"><span class="shortcut-url-code" title="Click to copy">http://${serverAddress}/api/switchbot/off</span></td>
+                <td data-label="ON / Run URL"><span class="shortcut-url-code" title="Click to copy">${baseUrl}/api/switchbot/on</span></td>
+                <td data-label="Trigger OFF URL"><span class="shortcut-url-code" title="Click to copy">${baseUrl}/api/switchbot/off</span></td>
                 <td data-label="Toggle State URL"><span class="shortcut-url-code" style="color: var(--text-muted); cursor: not-allowed; background: none; border: none;">[N/A]</span></td>
             </tr>
         `;
@@ -594,7 +1331,7 @@ document.addEventListener("DOMContentLoaded", () => {
         html += `
             <tr>
                 <td data-label="Device / Outlet"><strong>Wake on LAN (WOL)</strong><br><span style="font-size:0.75rem; color:var(--text-muted);">Broadcast UDP Magic Packet</span></td>
-                <td data-label="Trigger ON URL"><span class="shortcut-url-code" title="Click to copy">http://${serverAddress}/api/wol/wake</span></td>
+                <td data-label="ON / Run URL"><span class="shortcut-url-code" title="Click to copy">${baseUrl}/api/wol/wake</span></td>
                 <td data-label="Trigger OFF URL"><span class="shortcut-url-code" style="color: var(--text-muted); cursor: not-allowed; background: none; border: none;">[N/A]</span></td>
                 <td data-label="Toggle State URL"><span class="shortcut-url-code" style="color: var(--text-muted); cursor: not-allowed; background: none; border: none;">[N/A]</span></td>
             </tr>
@@ -607,14 +1344,14 @@ document.addEventListener("DOMContentLoaded", () => {
                 const isEpHidden = hiddenOutlets.includes(epKey);
 
                 const isSafetyLocked = false;
-                const onUrl = `http://${serverAddress}/api/tapo/${node.nodeId}/${ep.endpointId}/on`;
-                const offUrl = `http://${serverAddress}/api/tapo/${node.nodeId}/${ep.endpointId}/off`;
-                const toggleUrl = `http://${serverAddress}/api/tapo/${node.nodeId}/${ep.endpointId}/toggle`;
+                const onUrl = `${baseUrl}/api/tapo/${node.nodeId}/${ep.endpointId}/on`;
+                const offUrl = `${baseUrl}/api/tapo/${node.nodeId}/${ep.endpointId}/off`;
+                const toggleUrl = `${baseUrl}/api/tapo/${node.nodeId}/${ep.endpointId}/toggle`;
                 
                 html += `
                     <tr class="${isEpHidden ? 'faded-row' : ''}">
                         <td data-label="Device / Outlet"><strong>${ep.customName}</strong><br><span style="font-size:0.75rem; color:var(--text-muted);">${node.customName} &bull; EP ${ep.endpointId}</span></td>
-                        <td data-label="Trigger ON URL"><span class="shortcut-url-code" title="Click to copy">${onUrl}</span></td>
+                        <td data-label="ON / Run URL"><span class="shortcut-url-code" title="Click to copy">${onUrl}</span></td>
                         <td data-label="Trigger OFF URL">
                             ${isSafetyLocked ? `
                                 <span class="shortcut-url-code" style="color: var(--color-danger); border-color: rgba(239,68,68,0.2); background: rgba(239,68,68,0.05); cursor: not-allowed;" title="Safety Lock: Off Command Blocked">[BLOCKED]</span>
@@ -632,6 +1369,22 @@ document.addEventListener("DOMContentLoaded", () => {
                     </tr>
                 `;
             });
+        });
+
+        // Saved routines use the same POST action in iOS Shortcuts, but one
+        // webhook now performs the complete sequence and its time gaps.
+        routines.forEach(routine => {
+            const routineUrl = `${baseUrl}${routine.apiPath || `/api/routines/${routine.slug}/run`}`;
+            const delay = Number(routine.estimatedDelaySeconds || 0);
+            const detail = `${(routine.steps || []).length} step${(routine.steps || []).length === 1 ? "" : "s"}${delay ? ` · ${delay}s wait` : ""}`;
+            html += `
+                <tr>
+                    <td data-label="Device / Outlet"><strong>${escapeHtml(routine.name)}</strong><br><span style="font-size:0.75rem; color:var(--text-muted);">Routine webhook · ${escapeHtml(detail)}</span></td>
+                    <td data-label="ON / Run URL"><span class="shortcut-url-code" title="Click to copy">${escapeHtml(routineUrl)}</span></td>
+                    <td data-label="Trigger OFF URL"><span class="shortcut-url-code" style="color: var(--text-muted); cursor: not-allowed; background: none; border: none;">[N/A]</span></td>
+                    <td data-label="Toggle State URL"><span class="shortcut-url-code" style="color: var(--text-muted); cursor: not-allowed; background: none; border: none;">[N/A]</span></td>
+                </tr>
+            `;
         });
         
         tableBody.innerHTML = html;
