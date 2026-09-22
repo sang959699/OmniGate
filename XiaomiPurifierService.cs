@@ -115,7 +115,7 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
                 _settings.MacAddress = NormalizeMac(purifier.Mac);
                 if (!string.IsNullOrWhiteSpace(purifier.LocalIp)) _settings.IpAddress = purifier.LocalIp;
                 _settings.LocalValidated = false;
-                _settings.AutomationEnabled = false;
+                DisableAutomationLocked("Xiaomi Home sign-in completed; run a successful LAN test before enabling automation.", replaceExistingReason: true);
                 SaveSettingsLocked();
                 _snapshot.Message = "Token stored securely. Xiaomi Home is signed out; run the LAN test next.";
             }
@@ -366,7 +366,7 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
             lock (_lock)
             {
                 _settings.LocalValidated = false;
-                _settings.AutomationEnabled = false;
+                DisableAutomationLocked("LAN status refresh failed: " + CleanMessage(ex.Message));
                 SaveSettingsLocked();
                 _snapshot.Message = "LAN test failed: " + CleanMessage(ex.Message);
             }
@@ -531,7 +531,22 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
         {
             if (enabled && !_settings.LocalValidated)
                 throw new InvalidOperationException("Run a successful LAN test before enabling hourly presence automation.");
-            _settings.AutomationEnabled = enabled;
+
+            if (enabled)
+            {
+                if (!_settings.AutomationEnabled)
+                {
+                    _settings.AutomationEnabled = true;
+                    _settings.AutomationDisabledAt = null;
+                    _settings.AutomationDisabledReason = null;
+                    _logger.LogInformation("[Xiaomi] Hourly presence automation changed from disabled to enabled.");
+                }
+            }
+            else if (_settings.AutomationEnabled)
+            {
+                DisableAutomationLocked("Disabled manually from the OmniGate UI.");
+            }
+
             SaveSettingsLocked();
             _snapshot.Message = enabled
                 ? "Hourly presence automation is enabled. Manual presence checks will not switch the purifier."
@@ -546,7 +561,10 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
         {
             if (!_settings.AutomationEnabled)
             {
-                _logger.LogInformation("[Xiaomi] Scheduled presence result was {Presence}; automation is disabled.", isHome ? "home" : "away");
+                _logger.LogInformation(
+                    "[Xiaomi] Scheduled presence result was {Presence}; automation is disabled. Reason: {Reason}",
+                    isHome ? "home" : "away",
+                    _settings.AutomationDisabledReason ?? "No disable reason was recorded.");
                 return;
             }
             if (!_settings.LocalValidated)
@@ -651,12 +669,32 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
         FilterManufacturedAt = _snapshot.FilterManufacturedAt,
         FilterSerialNumber = _snapshot.FilterSerialNumber,
         LastLocalContact = _snapshot.LastLocalContact,
+        AutomationDisabledAt = _settings.AutomationDisabledAt,
+        AutomationDisabledReason = _settings.AutomationDisabledReason,
         LastAutomationAt = _settings.LastAutomationAt,
         LastAutomationResult = _settings.LastAutomationResult,
         Message = _snapshot.Message
     };
 
     private bool HasTokenLocked() => File.Exists(_tokenPath);
+
+    private void DisableAutomationLocked(string reason, bool replaceExistingReason = false)
+    {
+        bool wasEnabled = _settings.AutomationEnabled;
+        if (!wasEnabled && !replaceExistingReason && !string.IsNullOrWhiteSpace(_settings.AutomationDisabledReason))
+            return;
+
+        _settings.AutomationEnabled = false;
+        _settings.AutomationDisabledAt = DateTimeOffset.Now;
+        _settings.AutomationDisabledReason = reason;
+
+        if (wasEnabled)
+        {
+            _logger.LogWarning(
+                "[Xiaomi] Hourly presence automation changed from enabled to disabled. Reason: {Reason}",
+                reason);
+        }
+    }
 
     private void SetMessage(string message)
     {
@@ -781,6 +819,8 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
         public string MacAddress { get; set; } = ExpectedMac;
         public bool LocalValidated { get; set; }
         public bool AutomationEnabled { get; set; }
+        public DateTimeOffset? AutomationDisabledAt { get; set; }
+        public string? AutomationDisabledReason { get; set; }
         public DateTimeOffset? LastAutomationAt { get; set; }
         public string? LastAutomationResult { get; set; }
     }
@@ -842,6 +882,8 @@ public sealed class XiaomiPurifierStatusDto
     public bool QrReady { get; init; }
     public bool LocalValidated { get; init; }
     public bool AutomationEnabled { get; init; }
+    public DateTimeOffset? AutomationDisabledAt { get; init; }
+    public string? AutomationDisabledReason { get; init; }
     public bool? Power { get; init; }
     public int? Mode { get; init; }
     public int? FanLevel { get; init; }

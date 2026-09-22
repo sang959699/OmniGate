@@ -50,6 +50,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const btnXiaomiOn = document.getElementById("btn-xiaomi-on");
     const btnXiaomiOff = document.getElementById("btn-xiaomi-off");
     const xiaomiAutomation = document.getElementById("xiaomi-automation");
+    const xiaomiAutomationDiagnostic = document.getElementById("xiaomi-automation-diagnostic");
     const xiaomiLastAutomation = document.getElementById("xiaomi-last-automation");
     const xiaomiAirQuality = document.getElementById("xiaomi-air-quality");
     const xiaomiPm25 = document.getElementById("xiaomi-pm25");
@@ -430,6 +431,16 @@ document.addEventListener("DOMContentLoaded", () => {
         if (data.alarm !== null && data.alarm !== undefined) xiaomiAlarmControl.checked = data.alarm;
         xiaomiAutomation.disabled = !ready;
         xiaomiAutomation.checked = data.automationEnabled === true;
+        if (data.automationEnabled === true) {
+            xiaomiAutomationDiagnostic.textContent = "Automation is enabled.";
+        } else if (data.automationDisabledReason) {
+            const disabledAt = data.automationDisabledAt
+                ? ` at ${formatPresenceTime(data.automationDisabledAt, "")}`
+                : "";
+            xiaomiAutomationDiagnostic.textContent = `Automation disabled${disabledAt}: ${data.automationDisabledReason}`;
+        } else {
+            xiaomiAutomationDiagnostic.textContent = "Automation is off; no disable reason was recorded.";
+        }
         xiaomiLastAutomation.textContent = data.lastAutomationAt
             ? `Last hourly action: ${formatPresenceTime(data.lastAutomationAt, "")}. ${data.lastAutomationResult || ""}`
             : "Last hourly action: none yet.";
