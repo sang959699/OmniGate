@@ -365,10 +365,7 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
             _logger.LogWarning(ex, "[Xiaomi] Local purifier status refresh failed.");
             lock (_lock)
             {
-                _settings.LocalValidated = false;
-                DisableAutomationLocked("LAN status refresh failed: " + CleanMessage(ex.Message));
-                SaveSettingsLocked();
-                _snapshot.Message = "LAN test failed: " + CleanMessage(ex.Message);
+                _snapshot.Message = "Local status refresh failed: " + CleanMessage(ex.Message);
             }
             throw new InvalidOperationException(GetStatus().Message, ex);
         }
