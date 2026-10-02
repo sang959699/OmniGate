@@ -115,9 +115,15 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
                 _settings.MacAddress = NormalizeMac(purifier.Mac);
                 if (!string.IsNullOrWhiteSpace(purifier.LocalIp)) _settings.IpAddress = purifier.LocalIp;
                 _settings.LocalValidated = false;
-                DisableAutomationLocked("Xiaomi Home sign-in completed; run a successful LAN test before enabling automation.", replaceExistingReason: true);
+                // A new cloud token invalidates the previous LAN validation, but
+                // it must not silently switch off the user's automation choice.
+                // The scheduler will wait for LAN validation and resume after a
+                // successful test.
+                _logger.LogWarning(
+                    "[Xiaomi] Xiaomi Home sign-in reset local LAN validation; hourly presence automation remains {AutomationState} and will resume after a successful LAN test.",
+                    _settings.AutomationEnabled ? "enabled" : "disabled");
                 SaveSettingsLocked();
-                _snapshot.Message = "Token stored securely. Xiaomi Home is signed out; run the LAN test next.";
+                _snapshot.Message = "Token stored securely. Run the LAN test; the existing automation setting was preserved.";
             }
         }
         catch (Exception ex)
@@ -675,10 +681,10 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
 
     private bool HasTokenLocked() => File.Exists(_tokenPath);
 
-    private void DisableAutomationLocked(string reason, bool replaceExistingReason = false)
+    private void DisableAutomationLocked(string reason)
     {
         bool wasEnabled = _settings.AutomationEnabled;
-        if (!wasEnabled && !replaceExistingReason && !string.IsNullOrWhiteSpace(_settings.AutomationDisabledReason))
+        if (!wasEnabled && !string.IsNullOrWhiteSpace(_settings.AutomationDisabledReason))
             return;
 
         _settings.AutomationEnabled = false;
