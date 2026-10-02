@@ -56,6 +56,13 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
         _snapshot.Message = HasTokenLocked()
             ? "Local token is stored. Run the LAN test before enabling automation."
             : "Start one-time Xiaomi Home sign-in to obtain the local token.";
+        _logger.LogInformation(
+            "[Xiaomi] Hourly presence automation loaded as {AutomationState}. Last enabled: {EnabledAt} ({EnabledReason}); last disabled: {DisabledAt} ({DisabledReason}).",
+            _settings.AutomationEnabled ? "enabled" : "disabled",
+            _settings.AutomationEnabledAt?.ToString("O") ?? "never",
+            _settings.AutomationEnabledReason ?? "none",
+            _settings.AutomationDisabledAt?.ToString("O") ?? "never",
+            _settings.AutomationDisabledReason ?? "none");
     }
 
     public string QrCodePath => FindQrCodePath() ?? _configuredQrPath;
@@ -539,10 +546,15 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
             {
                 if (!_settings.AutomationEnabled)
                 {
+                    DateTimeOffset changedAt = DateTimeOffset.Now;
+                    const string reason = "Enabled manually from the OmniGate UI.";
                     _settings.AutomationEnabled = true;
-                    _settings.AutomationDisabledAt = null;
-                    _settings.AutomationDisabledReason = null;
-                    _logger.LogInformation("[Xiaomi] Hourly presence automation changed from disabled to enabled.");
+                    _settings.AutomationEnabledAt = changedAt;
+                    _settings.AutomationEnabledReason = reason;
+                    _logger.LogInformation(
+                        "[Xiaomi] Hourly presence automation turned on at {ChangedAt}. Reason: {Reason}",
+                        changedAt,
+                        reason);
                 }
             }
             else if (_settings.AutomationEnabled)
@@ -642,6 +654,8 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
         QrReady = _loginRunning && FindQrCodePath() is not null,
         LocalValidated = _settings.LocalValidated,
         AutomationEnabled = _settings.AutomationEnabled,
+        AutomationEnabledAt = _settings.AutomationEnabledAt,
+        AutomationEnabledReason = _settings.AutomationEnabledReason,
         Power = _snapshot.Power,
         Mode = _snapshot.Mode,
         FanLevel = _snapshot.FanLevel,
@@ -687,14 +701,16 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
         if (!wasEnabled && !string.IsNullOrWhiteSpace(_settings.AutomationDisabledReason))
             return;
 
+        DateTimeOffset changedAt = DateTimeOffset.Now;
         _settings.AutomationEnabled = false;
-        _settings.AutomationDisabledAt = DateTimeOffset.Now;
+        _settings.AutomationDisabledAt = changedAt;
         _settings.AutomationDisabledReason = reason;
 
         if (wasEnabled)
         {
             _logger.LogWarning(
-                "[Xiaomi] Hourly presence automation changed from enabled to disabled. Reason: {Reason}",
+                "[Xiaomi] Hourly presence automation turned off at {ChangedAt}. Reason: {Reason}",
+                changedAt,
                 reason);
         }
     }
@@ -822,6 +838,8 @@ public sealed class XiaomiPurifierService : IXiaomiPurifierService
         public string MacAddress { get; set; } = ExpectedMac;
         public bool LocalValidated { get; set; }
         public bool AutomationEnabled { get; set; }
+        public DateTimeOffset? AutomationEnabledAt { get; set; }
+        public string? AutomationEnabledReason { get; set; }
         public DateTimeOffset? AutomationDisabledAt { get; set; }
         public string? AutomationDisabledReason { get; set; }
         public DateTimeOffset? LastAutomationAt { get; set; }
@@ -885,6 +903,8 @@ public sealed class XiaomiPurifierStatusDto
     public bool QrReady { get; init; }
     public bool LocalValidated { get; init; }
     public bool AutomationEnabled { get; init; }
+    public DateTimeOffset? AutomationEnabledAt { get; init; }
+    public string? AutomationEnabledReason { get; init; }
     public DateTimeOffset? AutomationDisabledAt { get; init; }
     public string? AutomationDisabledReason { get; init; }
     public bool? Power { get; init; }

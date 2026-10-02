@@ -432,7 +432,11 @@ document.addEventListener("DOMContentLoaded", () => {
         xiaomiAutomation.disabled = !ready;
         xiaomiAutomation.checked = data.automationEnabled === true;
         if (data.automationEnabled === true) {
-            xiaomiAutomationDiagnostic.textContent = "Automation is enabled.";
+            const enabledAt = data.automationEnabledAt
+                ? ` at ${formatPresenceTime(data.automationEnabledAt, "")}`
+                : "";
+            const enabledReason = data.automationEnabledReason || "No enable reason was recorded.";
+            xiaomiAutomationDiagnostic.textContent = `Automation enabled${enabledAt}: ${enabledReason}`;
         } else if (data.automationDisabledReason) {
             const disabledAt = data.automationDisabledAt
                 ? ` at ${formatPresenceTime(data.automationDisabledAt, "")}`
